@@ -28,6 +28,8 @@ import {
   stalePairs as stalePairsOf,
   wilsonInterval,
   workerBadge as workerBadgeFor,
+  type BreakdownRow,
+  type PerformanceOverview,
   type HealthPayload,
   type RelayFailureKind,
   type RelayResult,
@@ -67,6 +69,24 @@ function useRelay<T>(
   }, [refresh, pollMs]);
 
   return { ...state, refresh };
+}
+
+/**
+ * Ask the active client for breakdowns. Sources that cannot serve them report
+ * that plainly instead of returning an empty table that would read as "no
+ * trades yet".
+ */
+function relayPerformance(): Promise<RelayResult<PerformanceOverview>> {
+  if (!relay.performance) {
+    return Promise.resolve({
+      ok: false,
+      status: 0,
+      data: null,
+      error: `the ${DATA_SOURCE_MODE} data source does not expose performance breakdowns`,
+      kind: 'error',
+    });
+  }
+  return relay.performance();
 }
 
 /** Render an ISO-8601 instant in UTC with the timezone spelled out. */
@@ -142,6 +162,54 @@ function StaleNotice({ message, since }: { message: string; since: string | null
   );
 }
 
+/**
+ * Compact breakdown table. Sample sizes are shown in every row, and a cohort
+ * with no decisive outcome reads "n/a" rather than a flattering 0%.
+ */
+function BreakdownTable({
+  caption,
+  rows,
+  keyHeader,
+}: {
+  caption: string;
+  rows: BreakdownRow[];
+  keyHeader: string;
+}) {
+  return (
+    <div className="table-scroll">
+      <table>
+        <caption className="muted">{caption}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{keyHeader}</th>
+            <th scope="col">n</th>
+            <th scope="col">W</th>
+            <th scope="col">L</th>
+            <th scope="col">D</th>
+            <th scope="col">unres.</th>
+            <th scope="col">accuracy</th>
+            <th scope="col">avg pips</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key}>
+              <td>{row.key}</td>
+              <td>{row.settled + row.unresolved}</td>
+              <td>{row.wins}</td>
+              <td>{row.losses}</td>
+              <td>{row.draws}</td>
+              <td>{row.unresolved}</td>
+              <td>{row.accuracy === null ? 'n/a' : `${(row.accuracy * 100).toFixed(1)}%`}</td>
+              <td>{row.avgPips === null ? 'n/a' : row.avgPips.toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="stat">
@@ -160,12 +228,17 @@ function Dashboard() {
   const health = useRelay<HealthPayload>(relay.health, 15_000);
   const summary = useRelay<SummaryPayload>(relay.summary, 15_000);
   const signals = useRelay<{ signals: SignalRow[]; count: number }>(() => relay.signals(25), 30_000);
+  // Optional: not every data source can serve breakdowns, so the card is only
+  // rendered when the reader exists and answers.
+  const performance = useRelay<PerformanceOverview>(() => relayPerformance(), 60_000);
+  const performanceValue = performance.result.state === 'ready' ? performance.result.value : null;
 
   const refreshAll = useCallback(() => {
     void health.refresh();
     void summary.refresh();
     void signals.refresh();
-  }, [health, summary, signals]);
+    void performance.refresh();
+  }, [health, summary, signals, performance]);
 
   const summaryValue = summary.result.state === 'ready' ? summary.result.value : null;
   const signalsValue = summaryValue?.signals ?? null;
@@ -177,6 +250,7 @@ function Dashboard() {
   const alerts = summaryValue?.alerts ?? [];
   const model = summaryValue?.model ?? null;
   const learning = summaryValue?.learning ?? null;
+
 
   const stalePairs = useMemo(() => stalePairsOf(marketData), [marketData]);
 
@@ -474,6 +548,35 @@ function Dashboard() {
           ) : (
             <p className="muted">Delivery state unavailable.</p>
           )}
+        </Card>
+
+        <Card title="Performance by pair & strategy" status={performanceValue ? 'CONNECTED' : undefined}>
+          {performance.result.state === 'loading' ? <Loading what="performance breakdowns" /> : null}
+          {performance.result.state === 'error' ? (
+            <p className="muted">
+              Not available from this data source: {performance.result.message}
+            </p>
+          ) : null}
+          {performanceValue && performanceValue.byPair.length === 0 && performanceValue.byStrategy.length === 0 ? (
+            <p className="muted">
+              No settled signals to break down yet. Accuracy appears once outcomes exist; unresolved records stay
+              visible in their own column and are never counted as wins.
+            </p>
+          ) : performanceValue ? (
+            <>
+              {performanceValue.byPair.length > 0 ? (
+                <BreakdownTable caption="By instrument (paper, net of modelled costs)" rows={performanceValue.byPair} keyHeader="pair" />
+              ) : null}
+              {performanceValue.byStrategy.length > 0 ? (
+                <BreakdownTable
+                  caption="By generating strategy (paper, net of modelled costs)"
+                  rows={performanceValue.byStrategy}
+                  keyHeader="strategy"
+                />
+              ) : null}
+              {performanceValue.note ? <p className="muted">{performanceValue.note}</p> : null}
+            </>
+          ) : null}
         </Card>
 
         <Card title="Alerts" status={alerts.length === 0 ? 'CONNECTED' : 'DEGRADED'}>

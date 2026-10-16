@@ -246,6 +246,100 @@ export interface RelayClient {
   summary: () => Promise<RelayResult<SummaryPayload>>;
   config: () => Promise<RelayResult<Record<string, unknown>>>;
   signals: (limit?: number) => Promise<RelayResult<{ signals: SignalRow[]; count: number }>>;
+  /**
+   * Optional per-pair/strategy breakdowns. Present when the data source can
+   * serve them (relay `/api/performance`, the snapshot artifact, or the two
+   * public performance views); the dashboard hides the card when it is absent
+   * rather than showing zeros.
+   */
+  performance?: () => Promise<RelayResult<PerformanceOverview>>;
+}
+
+/** Normalise whichever shape the source returns into the panel's view model. */
+export function toPerformanceOverview(payload: unknown): PerformanceOverview {
+  const source = (payload ?? {}) as Record<string, unknown>;
+  const listOf = (key: string): unknown[] => {
+    const value = source[key];
+    if (Array.isArray(value)) return value;
+    // Supabase rows arrive as a flat array.
+    return [];
+  };
+  const flat = Array.isArray(payload) ? (payload as unknown[]) : [];
+  return {
+    byPair: normalizeBreakdownRows(listOf('byPair').length > 0 ? listOf('byPair') : []),
+    byStrategy: normalizeBreakdownRows(listOf('byStrategy')),
+    sampleSize:
+      typeof source.sampleSize === 'number'
+        ? source.sampleSize
+        : flat.length > 0
+          ? flat.length
+          : undefined,
+    note: typeof source.note === 'string' ? source.note : undefined,
+  };
+}
+
+/** One performance breakdown row, in the shape the dashboard renders. */
+export interface BreakdownRow {
+  key: string;
+  settled: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  unresolved: number;
+  accuracy: number | null;
+  accuracyConservative: number | null;
+  avgPips: number | null;
+  totalPips: number;
+}
+
+export interface PerformanceOverview {
+  byPair: BreakdownRow[];
+  byStrategy: BreakdownRow[];
+  sampleSize?: number;
+  note?: string;
+}
+
+/**
+ * Normalise breakdown rows from either source: the relay/snapshot payload
+ * (camelCase, produced by `@vortex/core`) or the Supabase `public_*_performance`
+ * views (snake_case). Missing denominators are reported as null, never as 0%,
+ * and unresolved rows are carried separately so they can never be counted as
+ * wins.
+ */
+export function normalizeBreakdownRows(rows: unknown[]): BreakdownRow[] {
+  const pick = (row: Record<string, unknown>, ...names: string[]): unknown => {
+    for (const name of names) {
+      if (row[name] !== undefined && row[name] !== null) return row[name];
+    }
+    return undefined;
+  };
+  return rows
+    .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+    .map((row) => {
+      const wins = finiteOrNull(pick(row, 'wins')) ?? 0;
+      const losses = finiteOrNull(pick(row, 'losses')) ?? 0;
+      const draws = finiteOrNull(pick(row, 'draws')) ?? 0;
+      const unresolved = finiteOrNull(pick(row, 'unresolved')) ?? 0;
+      const decisive = wins + losses;
+      const accuracyFromRow = finiteOrNull(pick(row, 'accuracy'));
+      return {
+        key: String(pick(row, 'key', 'pair', 'strategy', 'regime') ?? 'UNKNOWN'),
+        settled: finiteOrNull(pick(row, 'settled')) ?? decisive + draws,
+        wins,
+        losses,
+        draws,
+        unresolved,
+        accuracy: accuracyFromRow ?? (decisive === 0 ? null : Number((wins / decisive).toFixed(4))),
+        accuracyConservative:
+          finiteOrNull(pick(row, 'accuracyConservative', 'accuracy_conservative')) ??
+          (wins + losses + draws + unresolved === 0
+            ? null
+            : Number((wins / (wins + losses + draws + unresolved)).toFixed(4))),
+        avgPips: finiteOrNull(pick(row, 'avgPips', 'avg_pips')),
+        totalPips: finiteOrNull(pick(row, 'totalPips', 'total_pips')) ?? 0,
+      };
+    })
+    .sort((a, b) => b.settled - a.settled || a.key.localeCompare(b.key));
 }
 
 /** Rows from `public_model_versions` (superset of what the dashboard shows). */
@@ -590,6 +684,11 @@ export function createRelayClient(baseUrl = RELAY_BASE): RelayClient {
     summary: () => get<SummaryPayload>('/api/summary'),
     config: () => get<Record<string, unknown>>('/api/config'),
     signals: (limit = 25) => get<{ signals: SignalRow[]; count: number }>(`/api/signals?limit=${limit}`),
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const res = await get<Record<string, unknown>>('/api/performance');
+      if (!res.ok || !res.data) return { ...res, data: null };
+      return { ...res, data: toPerformanceOverview(res.data) };
+    },
   };
 }
 
@@ -930,6 +1029,34 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
       }));
       return { ok: true, status: 200, data: { signals, count: signals.length }, error: null, kind: 'none' };
     },
+
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const [pairRes, strategyRes] = await Promise.all([
+        queryView<Record<string, unknown>[]>('public_pair_performance?select=*'),
+        queryView<Record<string, unknown>[]>('public_strategy_performance?select=*'),
+      ]);
+      if (!pairRes.ok && !strategyRes.ok) {
+        const failure = !pairRes.ok ? pairRes : strategyRes;
+        return {
+          ok: false,
+          status: failure.status,
+          data: null,
+          error: failure.error ?? 'the performance views are not readable',
+          kind: failure.kind === 'none' ? 'error' : failure.kind,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          byPair: normalizeBreakdownRows(pairRes.data ?? []),
+          byStrategy: normalizeBreakdownRows(strategyRes.data ?? []),
+          note: 'Read from the RLS-protected public_pair_performance and public_strategy_performance views.',
+        },
+        error: null,
+        kind: 'none',
+      };
+    },
   };
 }
 
@@ -960,6 +1087,8 @@ export function createSnapshotClient(
     config: Record<string, unknown>;
     signals: { signals: SignalRow[]; count: number };
   };
+
+  /** Snapshot JSON is produced by the exporter; `performance` may be absent. */
 
   async function downloadSnapshot(): Promise<RelayResult<SnapshotPayload>> {
     try {
@@ -1071,6 +1200,24 @@ export function createSnapshotClient(
       }
       const sliced = snap.data.signals.signals.slice(0, limit);
       return { ok: true, status: 200, data: { signals: sliced, count: sliced.length }, error: null, kind: 'none' };
+    },
+
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const snap = await loadSnapshot();
+      if (!snap.ok || !snap.data) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
+      const block = (snap.data.summary as { performance?: unknown } | null)?.performance;
+      if (!block) {
+        return {
+          ok: false,
+          status: 200,
+          data: null,
+          error: 'this snapshot was built before per-pair breakdowns were exported',
+          kind: 'error',
+        };
+      }
+      return { ok: true, status: 200, data: toPerformanceOverview(block), error: null, kind: 'none' };
     },
   };
 }

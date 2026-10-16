@@ -17,12 +17,14 @@ import {
   isSetupRequiredError,
   marketDataBadge,
   marketDataLabel,
+  normalizeBreakdownRows,
   normalizeWorkerLiveness,
   reduceRelayState,
   stalePairs,
   relay,
   summarizeLearningRuns,
   summarizeModelVersions,
+  toPerformanceOverview,
   wilsonInterval,
   workerBadge,
   RELAY_BASE,
@@ -554,5 +556,132 @@ describe('dashboard banners and badges', () => {
     expect(label).toMatch(/STALE/);
     const empty = marketDataLabel({ pair: 'EUR/USD', status: 'NOT VERIFIED', ageSeconds: null, detail: null, stale: false });
     expect(empty).toMatch(/no candles/);
+  });
+});
+
+describe('performance breakdowns', () => {
+  it('normalises the snake_case public view rows', () => {
+    const rows = normalizeBreakdownRows([
+      { pair: 'EUR/USD', decisive: 8, wins: 5, losses: 3, draws: 1, unresolved: 2, avg_pips: 1.25 },
+      { pair: 'GBP/USD', decisive: 0, wins: 0, losses: 0, draws: 0, unresolved: 4, avg_pips: null },
+    ]);
+    expect(rows[0]).toMatchObject({ key: 'EUR/USD', wins: 5, losses: 3, draws: 1, unresolved: 2, avgPips: 1.25 });
+    expect(rows[0]!.accuracy).toBeCloseTo(0.625, 3);
+    expect(rows[0]!.accuracyConservative).toBeCloseTo(5 / 11, 3);
+    // No decisive outcome must read as "no accuracy", never as 0%.
+    expect(rows[1]!.accuracy).toBeNull();
+    expect(rows[1]!.settled).toBe(0);
+  });
+
+  it('passes through the camelCase rows the relay already computes', () => {
+    const rows = normalizeBreakdownRows([
+      { key: 'trend_follow', settled: 10, wins: 6, losses: 4, draws: 0, unresolved: 1, accuracy: 0.6, avgPips: 0.4, totalPips: 4 },
+    ]);
+    expect(rows[0]).toEqual({
+      key: 'trend_follow',
+      settled: 10,
+      wins: 6,
+      losses: 4,
+      draws: 0,
+      unresolved: 1,
+      accuracy: 0.6,
+      accuracyConservative: Number((6 / 11).toFixed(4)),
+      avgPips: 0.4,
+      totalPips: 4,
+    });
+  });
+
+  it('sorts by sample size and ignores junk rows', () => {
+    const rows = normalizeBreakdownRows([
+      { strategy: 'tiny', wins: 1, losses: 1 },
+      null,
+      'nonsense',
+      { strategy: 'busy', wins: 20, losses: 10 },
+    ]);
+    expect(rows.map((r) => r.key)).toEqual(['busy', 'tiny']);
+  });
+
+  it('reports an empty breakdown for an empty table', () => {
+    expect(normalizeBreakdownRows([])).toEqual([]);
+  });
+
+  it('exposes the breakdown through the Supabase client when the views answer', async () => {
+    // A missing view must degrade, not fabricate an empty table.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('public_pair_performance')) {
+          return jsonResponse([{ pair: 'EUR/USD', decisive: 4, wins: 3, losses: 1, draws: 0, unresolved: 0, avg_pips: 2.1 }]);
+        }
+        if (url.includes('public_strategy_performance')) {
+          return jsonResponse([{ strategy: 'breakout', decisive: 2, wins: 1, losses: 1, draws: 0, unresolved: 0, avg_pips: -0.4 }]);
+        }
+        if (url.includes('public_worker_status')) {
+          return jsonResponse([
+            { worker_id: 'w', version: 'v', last_seen_at: new Date().toISOString(), last_job: null, last_job_at: null, seconds_since_heartbeat: 5, liveness: 'CONNECTED', metadata: {} },
+          ]);
+        }
+        return jsonResponse([]);
+      }),
+    );
+    const client = createSupabasePublicClient({ url: 'https://example.supabase.co', anonKey: 'anon' });
+    const result = await client.performance!();
+    expect(result.ok).toBe(true);
+    expect(result.data?.byPair[0]?.key).toBe('EUR/USD');
+    expect(result.data?.byStrategy[0]?.key).toBe('breakout');
+    expect(result.data?.byStrategy[0]?.avgPips).toBeCloseTo(-0.4, 5);
+  });
+});
+
+describe('performance reader availability', () => {
+  it('reports a missing view as an error instead of an empty breakdown', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({ code: '42P01', message: 'relation "public.public_pair_performance" does not exist' }, 404)),
+    );
+    const client = createSupabasePublicClient({ url: 'https://example.supabase.co', anonKey: 'anon' });
+    const result = await client.performance!();
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe('setup-required');
+  });
+
+  it('every client declares a performance reader so the idempotent dashboard can rely on it', () => {
+    expect(typeof createSnapshotClient('./snapshot.json').performance).toBe('function');
+    expect(typeof createSupabasePublicClient({ url: 'https://x.supabase.co', anonKey: 'anon' }).performance).toBe('function');
+    expect(typeof relay.performance).toBe('function');
+  });
+
+  it('normalises a relay /api/performance payload', () => {
+    const overview = toPerformanceOverview({
+      byPair: [{ key: 'EUR/USD', settled: 4, wins: 3, losses: 1, draws: 0, unresolved: 1, accuracy: 0.75, avgPips: 1.1, totalPips: 4.4 }],
+      byStrategy: [],
+      sampleSize: 5,
+      note: 'paper',
+    });
+    expect(overview.byPair[0]).toMatchObject({ key: 'EUR/USD', wins: 3, unresolved: 1, avgPips: 1.1 });
+    expect(overview.sampleSize).toBe(5);
+    expect(overview.byStrategy).toEqual([]);
+  });
+
+  it('tells the user when a snapshot predates the breakdown export', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          ok: true,
+          configured: true,
+          generatedAt: new Date().toISOString(),
+          health: null,
+          summary: { worker: null, lastSuccessfulJob: null, marketData: [], providerBudget: null, signals: null, telegram: { configuration: { status: 'OFF', detail: 'off' }, sent: 0, failed: 0, unconfirmed: 0 }, alerts: [] },
+          config: {},
+          signals: { signals: [], count: 0 },
+        }),
+      ),
+    );
+    const client = createSnapshotClient('./snapshot.json', { cacheMs: 0 });
+    const result = await client.performance!();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/before per-pair breakdowns/);
   });
 });

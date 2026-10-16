@@ -7,8 +7,16 @@
  * and dataset contents stay server-side.
  */
 
+import {
+  byPair,
+  byRegime,
+  byStrategy,
+  confidenceCalibration,
+  summarize,
+  type PerformanceBreakdown,
+} from '@vortex/core';
 import type { ModelVersion, SqlClient } from '@vortex/db';
-import { listLearningRuns, listModelVersions } from '@vortex/db';
+import { listLearningRuns, listModelVersions, listSignals } from '@vortex/db';
 
 export interface ModelMetricsView {
   accuracy: number | null;
@@ -154,4 +162,36 @@ export async function modelRegistrySummary(
     // degrade the panel, never break the whole status response.
     return { model: null, learning: null, error: (error as Error).message };
   }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Performance breakdowns (shared by the relay and the snapshot exporter)     */
+/* ------------------------------------------------------------------------- */
+
+export interface PerformanceOverviewView {
+  overall: ReturnType<typeof summarize>;
+  byPair: PerformanceBreakdown[];
+  byStrategy: PerformanceBreakdown[];
+  byRegime: PerformanceBreakdown[];
+  calibration: ReturnType<typeof confidenceCalibration>;
+  sampleSize: number;
+  note: string;
+}
+
+/**
+ * One implementation of the performance numbers, used by `GET /api/performance`
+ * and the static snapshot so the two can never disagree. Denominators stay
+ * explicit: unresolved rows are counted separately and never become wins.
+ */
+export async function performanceOverview(client: SqlClient, limit = 2000): Promise<PerformanceOverviewView> {
+  const rows = await listSignals(client, { limit });
+  return {
+    overall: summarize(rows),
+    byPair: byPair(rows),
+    byStrategy: byStrategy(rows),
+    byRegime: byRegime(rows),
+    calibration: confidenceCalibration(rows, 5),
+    sampleSize: rows.length,
+    note: 'Accuracy uses decisive outcomes only; unresolved records are reported separately and never counted as wins. Pips are paper results net of the modelled spread and slippage.',
+  };
 }

@@ -17,15 +17,10 @@ import { randomUUID } from 'node:crypto';
 import {
   assertNoSecrets,
   byHourUtc,
-  byPair,
-  byRegime,
-  byStrategy,
-  confidenceCalibration,
   maskKey,
   publicRuntimeConfig,
   redact,
   secretValues,
-  summarize,
 } from '@vortex/core';
 import {
   acknowledgeAlert,
@@ -62,7 +57,7 @@ import {
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
-import { modelRegistrySummary } from './services/registry.js';
+import { modelRegistrySummary, performanceOverview } from './services/registry.js';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runSignalCycle } from './jobs/signals.js';
@@ -518,13 +513,9 @@ async function signalsRoute(ctx: RouteContext): Promise<unknown> {
 
 async function performanceRoute(ctx: RouteContext): Promise<unknown> {
   const client = db(ctx.runtime);
+  const breakdowns = await performanceOverview(client);
   const rows = await listSignals(client, { limit: 2000 });
-  const overall = summarize(rows);
-  const pairs = byPair(rows);
-  const strategies = byStrategy(rows);
-  const regimes = byRegime(rows);
   const hours = byHourUtc(rows);
-  const calibration = confidenceCalibration(rows, 5);
   const account = await getAccount(client, 'default');
   const paper = account
     ? {
@@ -536,12 +527,8 @@ async function performanceRoute(ctx: RouteContext): Promise<unknown> {
       }
     : null;
   return {
-    overall,
-    byPair: pairs,
-    byStrategy: strategies,
-    byRegime: regimes,
+    ...breakdowns,
     byHour: hours,
-    calibration,
     paper,
     simulated: true,
     note: 'Paper-trading figures are simulations that charge spread and slippage; they are not realised profit.',

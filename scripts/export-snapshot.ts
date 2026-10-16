@@ -27,7 +27,7 @@ import {
 } from '@vortex/db';
 import { WorkerRuntime } from '../apps/worker/src/runtime.js';
 import { healthSnapshot } from '../apps/worker/src/jobs/maintenance.js';
-import { modelRegistrySummary } from '../apps/worker/src/services/registry.js';
+import { modelRegistrySummary, performanceOverview } from '../apps/worker/src/services/registry.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultOut = join(root, 'apps', 'web', 'public', 'snapshot.json');
@@ -67,6 +67,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
     components,
     recentSignals,
     registry,
+    performance,
   ] =
     await Promise.all([
       runtime.pingDb(),
@@ -80,6 +81,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       healthSnapshot(runtime),
       listSignals(client, { limit: 25 }),
       modelRegistrySummary(client),
+      performanceOverview(client),
     ]);
 
   const quality = rawQuality.map((row) => {
@@ -181,6 +183,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       components,
       model: registry.model,
       learning: registry.learning,
+      performance,
       alerts: alerts.map((a) => ({ severity: a.severity, code: a.code, title: a.title, lastSeenAt: a.lastSeenAt })),
     },
     config: publicRuntimeConfig(runtime.config),
