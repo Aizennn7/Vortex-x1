@@ -8,6 +8,8 @@
  * actually works.
  */
 
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PgliteClient, insertKey, migrate, encryptSecret, keyFingerprint } from '@vortex/db';
 import { maskKey } from '@vortex/core';
 import type { SqlClient, StoredKey } from '@vortex/db';
@@ -122,5 +124,40 @@ export function stubProvider(handlers: {
       if (!handlers.quote) throw new Error('stub provider: no quote handler');
       return (await handlers.quote()) as never;
     },
+  };
+}
+
+/**
+ * A stand-in for the upstream market-data provider.
+ *
+ * Key verification is the one code path that must talk to a third party, so
+ * tests drive it against this local server instead of the real API: the
+ * assertions then describe our behaviour (accepted / rejected / unreachable)
+ * rather than whatever the network happens to do on a given machine.
+ */
+export interface ProviderStub {
+  url: string;
+  requests: string[];
+  setResponse(response: { status: number; body: unknown }): void;
+  close(): Promise<void>;
+}
+
+export async function createProviderStub(): Promise<ProviderStub> {
+  let current: { status: number; body: unknown } = { status: 200, body: {} };
+  const requests: string[] = [];
+  const server: Server = createServer((req, res) => {
+    requests.push(req.url ?? '/');
+    res.writeHead(current.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(current.body));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    requests,
+    setResponse(response) {
+      current = response;
+    },
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }

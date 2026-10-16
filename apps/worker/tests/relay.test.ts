@@ -7,12 +7,21 @@
  * key, a bot token or the admin token itself.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { encryptSecret, insertSignal, keyFingerprint, listAudit, listKeys, updateKey } from '@vortex/db';
 import { maskKey } from '@vortex/core';
-import { createHarness, seedKey, TEST_ADMIN_TOKEN, TEST_BOT_TOKEN, TEST_SECRET_KEY, type WorkerHarness } from './helpers.js';
+import {
+  createHarness,
+  createProviderStub,
+  seedKey,
+  TEST_ADMIN_TOKEN,
+  TEST_BOT_TOKEN,
+  TEST_SECRET_KEY,
+  type WorkerHarness,
+  type ProviderStub,
+} from './helpers.js';
 import { createRelay } from '../src/http.js';
 
 const PLAINTEXT_KEY = 'relay-test-provider-key-0123456789';
@@ -40,6 +49,7 @@ beforeAll(async () => {
     env: {
       TELEGRAM_BOT_TOKEN: TEST_BOT_TOKEN,
       TELEGRAM_CHANNELS: '@vortex_test',
+      VORTEX_TELEGRAM_ENABLED: 'true',
       VORTEX_CORS_ORIGINS: 'https://dashboard.example.com',
       VORTEX_WORKER_ID: 'relay-test-worker',
     },
@@ -297,18 +307,61 @@ describe('privileged plane — key management', () => {
     expect((await listKeys(harness.client)).some((k) => k.id === key.id)).toBe(false);
   });
 
-  it('reports an unreachable provider as unverified rather than disabling the key', async () => {
-    const key = await seedKey(harness.client, { label: 'unverifiable' });
-    const result = await api(`/admin/keys/${key.id}/verify`, { method: 'POST', headers: admin });
-    expect(result.status).toBe(200);
-    // The sandbox has no route to api.twelvedata.com, so this must come back as
-    // UNVERIFIED (transport failure), not REJECTED.
-    expect(result.body.data.outcome).toBe('UNVERIFIED');
-    expect(result.body.data.ok).toBe(false);
-    expect(result.body.data.note).toContain('not disabled');
-    const stored = (await listKeys(harness.client)).find((k) => k.id === key.id);
-    expect(stored?.status).not.toBe('INVALID');
-    expect(stored?.lastVerifiedAt).not.toBeNull();
+  describe('key verification against the provider', () => {
+    let stub: ProviderStub;
+    const realBaseUrl = harness?.runtime.config.providerBaseUrl;
+
+    beforeAll(async () => {
+      stub = await createProviderStub();
+    });
+
+    afterAll(async () => {
+      await stub.close();
+      if (harness) harness.runtime.config.providerBaseUrl = realBaseUrl ?? '';
+    });
+
+    it('accepts a key the provider answers for, and records the reported credits', async () => {
+      stub.setResponse({ status: 200, body: { api_usage: 12, plan_category: 'grow' } });
+      harness.runtime.config.providerBaseUrl = stub.url;
+      const key = await seedKey(harness.client, { label: 'verifiable' });
+      const result = await api(`/admin/keys/${key.id}/verify`, { method: 'POST', headers: admin });
+      expect(result.status).toBe(200);
+      expect(result.body.data.outcome).toBe('ACCEPTED');
+      expect(result.body.data.ok).toBe(true);
+      expect(result.body.data.creditsUsed).toBe(12);
+      // The real key must be what reaches the provider, never the ciphertext.
+      expect(stub.requests.some((url) => url.includes('apikey=demo-provider-key-abcdef123456'))).toBe(true);
+      const stored = (await listKeys(harness.client)).find((k) => k.id === key.id);
+      expect(stored?.status).toBe('ACTIVE');
+      expect(stored?.providerUsageCredits).toBe(12);
+      expect(stored?.lastVerifiedAt).not.toBeNull();
+    });
+
+    it('rejects a key the provider refuses, and disables it', async () => {
+      stub.setResponse({ status: 401, body: { code: 401, status: 'error', message: 'Invalid API key' } });
+      harness.runtime.config.providerBaseUrl = stub.url;
+      const key = await seedKey(harness.client, { label: 'rejected' });
+      const result = await api(`/admin/keys/${key.id}/verify`, { method: 'POST', headers: admin });
+      expect(result.body.data.outcome).toBe('REJECTED');
+      expect(result.body.data.ok).toBe(false);
+      expect(result.body.data.detail).toContain('Invalid API key');
+      const stored = (await listKeys(harness.client)).find((k) => k.id === key.id);
+      expect(stored?.status).toBe('INVALID');
+    });
+
+    it('reports an unreachable provider as unverified rather than disabling the key', async () => {
+      // Port 1 is never bound: connection refused immediately, deterministically.
+      harness.runtime.config.providerBaseUrl = 'http://127.0.0.1:1';
+      const key = await seedKey(harness.client, { label: 'unverifiable' });
+      const result = await api(`/admin/keys/${key.id}/verify`, { method: 'POST', headers: admin });
+      expect(result.status).toBe(200);
+      expect(result.body.data.outcome).toBe('UNVERIFIED');
+      expect(result.body.data.ok).toBe(false);
+      expect(result.body.data.note).toContain('not disabled');
+      const stored = (await listKeys(harness.client)).find((k) => k.id === key.id);
+      expect(stored?.status).not.toBe('INVALID');
+      expect(stored?.lastVerifiedAt).not.toBeNull();
+    });
   });
 
   it('does not verify an undecryptable key', async () => {
@@ -335,11 +388,33 @@ describe('privileged plane — operations', () => {
     expect(channels.status).toBe(200);
     expect(Array.isArray(channels.body.data.channels)).toBe(true);
 
-    // The bot token is fake, so the live check must fail honestly.
-    const test = await api('/admin/telegram/test', { method: 'POST', headers: admin });
-    expect(test.status).toBe(200);
-    expect(test.body.data.ok).toBe(false);
-    expect(JSON.stringify(test.body)).not.toContain(TEST_BOT_TOKEN);
+    // Intercept only the Telegram API so the assertion is about our behaviour
+    // (a rejected credential never reports success) rather than about whether
+    // the machine running the tests can reach api.telegram.org. Everything else
+    // keeps using the real fetch, including the calls this test makes to the
+    // relay itself.
+    const realFetch = globalThis.fetch;
+    const telegramCalls: string[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('api.telegram.org')) {
+        telegramCalls.push(url);
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: false, error_code: 401, description: 'Unauthorized' }), { status: 401 }),
+        );
+      }
+      return realFetch(input as RequestInfo, init);
+    });
+    try {
+      const test = await api('/admin/telegram/test', { method: 'POST', headers: admin });
+      expect(test.status).toBe(200);
+      expect(test.body.data.ok).toBe(false);
+      expect(test.body.data.detail).toContain('Unauthorized');
+      expect(JSON.stringify(test.body)).not.toContain(TEST_BOT_TOKEN);
+      expect(telegramCalls.length).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('validates settings writes', async () => {
