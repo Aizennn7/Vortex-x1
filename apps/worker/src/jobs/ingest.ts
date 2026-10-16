@@ -22,7 +22,7 @@ import {
 } from '@vortex/core';
 import { listPairs, countGaps, syncPairs, upsertCandles, upsertQuality, type SqlClient } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
-import { withJob } from './job.js';
+import { withJob, type WithJobOptions } from './job.js';
 
 export interface IngestSummary {
   pairsConsidered: number;
@@ -255,12 +255,22 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
 }
 
 /** Wrap ingestion in the idempotent job ledger (one slot per minute). */
-export async function runIngestionJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runIngestionJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const slot = `ingest-${toIso(Math.floor(now.getTime() / 60_000) * 60_000)}`;
-  await withJob(runtime, 'ingest_market_data', slot, async () => {
-    const summary = await runIngestionCycle(runtime, now);
-    return { status: summary.exhausted ? 'SKIPPED' : 'SUCCEEDED', detail: { ...summary } };
-  });
+  return withJob(
+    runtime,
+    'ingest_market_data',
+    slot,
+    async () => {
+      const summary = await runIngestionCycle(runtime, now);
+      return { status: summary.exhausted ? 'SKIPPED' : 'SUCCEEDED', detail: { ...summary } };
+    },
+    { staleAfterSeconds: 180, alertCode: 'ingest-failing', ...options },
+  );
 }
 
 export type { Pair };

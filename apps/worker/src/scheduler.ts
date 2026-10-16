@@ -112,8 +112,24 @@ export class WorkerScheduler {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     // Hand the lease back so a replacement instance can take over immediately
-    // instead of waiting for the TTL to expire.
+    // instead of waiting for the TTL to expire, and mark the heartbeat stopped
+    // so the dashboard never pretends a stopped worker is still running.
     if (this.leaseHeld) {
+      await upsertHeartbeat(this.runtime.db.client as SqlClient, {
+        workerId: this.runtime.config.workerId,
+        instanceLabel: process.env.VORTEX_INSTANCE_LABEL ?? 'worker',
+        version: this.runtime.config.engineVersion,
+        jobsCompleted: this.runtime.counters.jobsCompleted,
+        jobsFailed: this.runtime.counters.jobsFailed,
+        cyclesRun: this.runtime.counters.cyclesRun,
+        metadata: {
+          provider: this.runtime.config.provider,
+          synthetic: this.runtime.providerSynthetic,
+          stoppedAt: toIso(new Date()),
+          ...this.runtime.counters,
+        },
+        stopping: true,
+      }).catch(() => undefined);
       await releaseLock(this.runtime.db.client as SqlClient, SCHEDULER_LOCK, this.runtime.config.workerId)
         .catch(() => undefined);
       this.leaseHeld = false;

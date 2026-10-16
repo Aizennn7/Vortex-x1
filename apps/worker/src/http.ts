@@ -35,6 +35,7 @@ import {
   ensureAccount,
   getAccount,
   insertKey,
+  lastSuccessfulJob,
   listAlerts,
   listAudit,
   listDeliveries,
@@ -364,12 +365,42 @@ async function configRoute(ctx: RouteContext): Promise<unknown> {
   return publicRuntimeConfig(ctx.runtime.config);
 }
 
+function refreshQualityFreshness(
+  quality: Awaited<ReturnType<typeof listQuality>>,
+  maxCandleAgeSeconds: number,
+  nowMs = Date.now(),
+) {
+  return quality.map((row) => {
+    const checkLag =
+      row.checkedAt && Number.isFinite(Date.parse(row.checkedAt))
+        ? Math.max(0, Math.round((nowMs - Date.parse(row.checkedAt)) / 1000))
+        : 0;
+    const ageSeconds = row.ageSeconds === null ? null : row.ageSeconds + checkLag;
+    const stale =
+      row.status === 'DEGRADED' ||
+      row.status === 'DISCONNECTED' ||
+      (ageSeconds !== null && ageSeconds > maxCandleAgeSeconds);
+    let status = row.status;
+    if (ageSeconds !== null && status === 'CONNECTED') {
+      if (ageSeconds > 600) status = 'DISCONNECTED';
+      else if (ageSeconds > maxCandleAgeSeconds) status = 'DEGRADED';
+    }
+    return {
+      ...row,
+      status,
+      ageSeconds,
+      stale,
+    };
+  });
+}
+
 async function summaryRoute(ctx: RouteContext): Promise<unknown> {
   const { runtime } = ctx;
   if (!runtime.db.connected) {
     return {
       database: { status: 'DISCONNECTED', detail: runtime.db.detail },
       worker: null,
+      lastSuccessfulJob: null,
       marketData: [],
       providerBudget: null,
       signals: null,
@@ -379,8 +410,9 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     };
   }
   const client = db(runtime);
-  const [workers, quality, budget, counts, deliveries, alerts, components] = await Promise.all([
+  const [workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components] = await Promise.all([
     workerStatus(client),
+    lastSuccessfulJob(client),
     listQuality(client),
     runtime.keyPool.usageSnapshots(),
     signalCounts(client),
@@ -388,27 +420,43 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     listAlerts(client, false, 20),
     healthSnapshot(runtime),
   ]);
+  const nowMs = Date.now();
+  const quality = refreshQualityFreshness(rawQuality, runtime.config.maxCandleAgeSeconds, nowMs);
   const liveWorker = workers.find((w) => w.liveness === 'CONNECTED' || w.liveness === 'DEGRADED') ?? null;
+  const latestWorker = liveWorker ?? workers[0] ?? null;
+  const reportedLiveness = liveWorker ? liveWorker.liveness : latestWorker ? 'DISCONNECTED' : 'NOT VERIFIED';
   const pending = Object.entries(counts)
     .filter(([key]) => key.startsWith('PENDING:'))
     .reduce((acc, [, value]) => acc + value, 0);
   const decisive = (counts.WIN ?? 0) + (counts.LOSS ?? 0);
+  const lastFinishedAt = lastJob ? (lastJob.finishedAt ?? lastJob.startedAt) : null;
   return {
-    generatedAt: new Date().toISOString(),
-    marketOpen: isMarketOpen(new Date()),
-    worker: liveWorker
+    generatedAt: new Date(nowMs).toISOString(),
+    marketOpen: isMarketOpen(new Date(nowMs)),
+    worker: latestWorker
       ? {
-          workerId: liveWorker.workerId,
-          liveness: liveWorker.liveness,
-          secondsSince: liveWorker.secondsSince,
-          lastJob: liveWorker.lastJob,
-          lastJobAt: liveWorker.lastJobAt,
-          jobsCompleted: liveWorker.jobsCompleted,
-          jobsFailed: liveWorker.jobsFailed,
-          version: liveWorker.version,
+          workerId: latestWorker.workerId,
+          liveness: reportedLiveness,
+          running: reportedLiveness === 'CONNECTED',
+          secondsSince: latestWorker.secondsSince,
+          lastJob: latestWorker.lastJob ?? lastJob?.jobName ?? null,
+          lastJobAt: latestWorker.lastJobAt ?? lastFinishedAt,
+          jobsCompleted: latestWorker.jobsCompleted,
+          jobsFailed: latestWorker.jobsFailed,
+          version: latestWorker.version,
         }
       : null,
-    workerStatus: workers.length === 0 ? 'NOT VERIFIED' : liveWorker ? liveWorker.liveness : 'DISCONNECTED',
+    workerStatus: reportedLiveness,
+    lastSuccessfulJob: lastJob
+      ? {
+          jobName: lastJob.jobName,
+          slotKey: lastJob.slotKey,
+          finishedAt: lastFinishedAt!,
+          ageSeconds: Math.max(0, Math.round((nowMs - new Date(lastFinishedAt!).getTime()) / 1000)),
+          durationMs: lastJob.durationMs,
+          workerId: lastJob.workerId,
+        }
+      : null,
     marketData: quality,
     providerBudget: {
       enabledKeys: budget.summary.enabledKeys,
@@ -495,7 +543,8 @@ async function performanceRoute(ctx: RouteContext): Promise<unknown> {
 }
 
 async function qualityRoute(ctx: RouteContext): Promise<unknown> {
-  return { pairs: await listQuality(db(ctx.runtime)) };
+  const rows = await listQuality(db(ctx.runtime));
+  return { pairs: refreshQualityFreshness(rows, ctx.runtime.config.maxCandleAgeSeconds) };
 }
 
 async function healthComponentsRoute(ctx: RouteContext): Promise<unknown> {

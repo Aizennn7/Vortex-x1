@@ -18,6 +18,16 @@ export interface InstrumentMeta {
   tier: 1 | 2 | 3;
 }
 
+/**
+ * Conservative free-tier default pair list.
+ *
+ * Twelve Data Free provides 8 requests/minute and 800 requests/day. Two pairs
+ * refreshed on a 5-minute scheduled cadence consume at most 576 credits/day
+ * (below the 680/day budget after 15% headroom) on a single key without
+ * requiring key rotation.
+ */
+export const FREE_TIER_DEFAULT_PAIRS: Pair[] = ['EUR/USD', 'GBP/USD'];
+
 export const DEFAULT_PAIRS: Pair[] = [
   'EUR/USD',
   'GBP/USD',

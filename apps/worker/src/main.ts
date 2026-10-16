@@ -26,10 +26,15 @@ import { WorkerRuntime } from './runtime.js';
 import { WorkerScheduler } from './scheduler.js';
 import { createRelay } from './http.js';
 import { planForRole, roleFromArgv, type Role } from './role.js';
+import { jobModesFromArgv, runOneShot } from './runner.js';
 
 async function main(): Promise<void> {
   const cliRole = roleFromArgv();
-  const runtime = await WorkerRuntime.create(cliRole ? { config: { role: cliRole } as Partial<VortexConfig> } : {});
+  const jobModes = jobModesFromArgv();
+  const effectiveRole: Role | undefined = jobModes ? 'worker' : cliRole;
+  const runtime = await WorkerRuntime.create(
+    effectiveRole ? { config: { role: effectiveRole } as Partial<VortexConfig> } : {},
+  );
   const logger = runtime.logger;
 
   const role: Role = runtime.config.role;
@@ -38,6 +43,7 @@ async function main(): Promise<void> {
   logger.info('VORTEX SI worker starting', {
     component: 'boot',
     role,
+    oneShotModes: jobModes ?? null,
     version: runtime.config.engineVersion,
     env: runtime.config.nodeEnv,
     provider: runtime.config.provider,
@@ -70,6 +76,29 @@ async function main(): Promise<void> {
       applied: result.applied.length,
       skipped: result.skipped.length,
     });
+  }
+
+  if (jobModes) {
+    try {
+      const summary = await runOneShot(runtime, { modes: jobModes });
+      logger.info('one-shot job run finished', {
+        component: 'runner',
+        modes: summary.modes,
+        leaseAcquired: summary.leaseAcquired,
+        ran: summary.ran,
+        skipped: summary.skipped,
+        failed: summary.failed,
+        recovered: summary.recovered,
+        lastSuccessfulJob: summary.lastSuccessfulJob,
+        durationMs: summary.durationMs,
+      });
+      if (summary.failed.length > 0) {
+        process.exitCode = 1;
+      }
+    } finally {
+      await runtime.close();
+    }
+    return;
   }
 
   let relay: Server | null = null;

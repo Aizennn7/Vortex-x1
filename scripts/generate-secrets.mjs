@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 /**
- * Mint the two deployment secrets that must be identical on both services.
+ * Mint the deployment secrets for VORTEX SI.
  *
  *   node scripts/generate-secrets.mjs
  *
- * VORTEX_SECRET_KEY encrypts provider keys at rest: a different value on the
- * relay and the worker means one of them cannot decrypt the keys the other
- * stored. VORTEX_ADMIN_TOKEN is the bearer token for /admin/*.
+ * VORTEX_SECRET_KEY encrypts provider keys at rest (AES-256-GCM).
+ * VORTEX_ADMIN_TOKEN is the bearer token for privileged /admin/* routes.
  *
  * The values are printed to stdout and nothing is written to disk, so they
- * never reach git. Paste them into the Render dashboard (both services) or add
- * them to `.env` locally — `.env` is git-ignored.
+ * never reach git. Paste them into GitHub Repository Secrets
+ * (Settings -> Secrets and variables -> Actions) or `.env` locally.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -25,7 +24,7 @@ process.stdout.write(
     'VORTEX_SECRET_KEY = ' + secretKey,
     'VORTEX_ADMIN_TOKEN = ' + adminToken,
     '',
-    'Set BOTH values, byte for byte, on vortex-si-relay AND vortex-si-worker.',
+    'Add these values in GitHub -> Settings -> Secrets and variables -> Actions -> Repository secrets.',
     'Nothing was written to disk. Do not commit them.',
     '',
   ].join('\n'),

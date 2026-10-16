@@ -30,7 +30,7 @@ import {
 } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
 import { runIngestionCycle } from './ingest.js';
-import { withJob } from './job.js';
+import { withJob, type WithJobOptions } from './job.js';
 import type { PreparedOpportunity } from '../services/engine.js';
 
 export interface SignalCycleSummary {
@@ -236,11 +236,15 @@ export async function runSignalActivation(runtime: WorkerRuntime, now = new Date
   return { activated, cancelled };
 }
 
-export async function runSignalJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runSignalJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const cfg = runtime.config;
   // Slot key = the cadence boundary we are publishing for, so one cycle per slot.
   const boundary = toIso(Math.floor(now.getTime() / (cfg.scanCadenceMinutes * 60_000)) * cfg.scanCadenceMinutes * 60_000);
-  await withJob(
+  return withJob(
     runtime,
     'signal_cycle',
     `signal-${boundary}`,
@@ -259,16 +263,26 @@ export async function runSignalJob(runtime: WorkerRuntime, now = new Date()): Pr
         },
       };
     },
-    { staleAfterSeconds: 120, alertCode: 'signal-cycle-failing' },
+    { staleAfterSeconds: 120, alertCode: 'signal-cycle-failing', ...options },
   );
 }
 
-export async function runActivationJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runActivationJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const slot = `activation-${toIso(Math.floor(now.getTime() / 15_000) * 15_000)}`;
-  await withJob(runtime, 'signal_activation', slot, async () => {
-    const result = await runSignalActivation(runtime, now);
-    return { status: 'SUCCEEDED', detail: { ...result } };
-  });
+  return withJob(
+    runtime,
+    'signal_activation',
+    slot,
+    async () => {
+      const result = await runSignalActivation(runtime, now);
+      return { status: 'SUCCEEDED', detail: { ...result } };
+    },
+    options,
+  );
 }
 
 /** Upcoming and in-flight signals for the dashboard/relay. */

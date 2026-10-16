@@ -48,7 +48,7 @@ import {
   type SqlClient,
 } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
-import { withJob } from './job.js';
+import { withJob, type WithJobOptions } from './job.js';
 
 export interface LearningSummary {
   datasetSize: number;
@@ -315,9 +315,13 @@ async function persistArtifact(
   return { path, checksum };
 }
 
-export async function runLearningJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runLearningJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const slot = `learning-${now.toISOString().slice(0, 10)}`;
-  await withJob(
+  return withJob(
     runtime,
     'learning_cycle',
     slot,
@@ -325,6 +329,6 @@ export async function runLearningJob(runtime: WorkerRuntime, now = new Date()): 
       const summary = await runLearningCycle(runtime, now);
       return { status: 'SUCCEEDED', detail: { ...summary } };
     },
-    { staleAfterSeconds: 3600, alertCode: 'learning-failing' },
+    { staleAfterSeconds: 3600, alertCode: 'learning-failing', ...options },
   );
 }

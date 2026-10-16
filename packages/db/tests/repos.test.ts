@@ -1,6 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { aggregate, type CandleInput } from '@vortex/core';
-import { claimJob, finishJob, upsertHeartbeat, workerStatus, acquireLock, releaseLock } from '../src/repos/jobs.js';
+import {
+  claimJob,
+  finishJob,
+  lastSuccessfulJob,
+  lastSuccessfulJobsByKind,
+  recoverStaleJobs,
+  upsertHeartbeat,
+  workerStatus,
+  acquireLock,
+  releaseLock,
+} from '../src/repos/jobs.js';
 import { countGaps, getCandles, listQuality, syncPairs, upsertCandles, upsertQuality, latestCandleTimes } from '../src/repos/candles.js';
 import { QuotaGate, currentUsage, quotaSummary, recordRequest, reserveQuota, refundQuota, QuotaExceededError } from '../src/repos/quota.js';
 import { applySettlement, cancelMissedPublishing, dueForPublish, dueForSettlement, insertSignal, listSignals, listResolvedForLearning, markPublished, activateDue } from '../src/repos/signals.js';
@@ -460,7 +470,49 @@ describe('job coordination', () => {
     expect(rows.rows[0]?.error).toBe('boom');
   });
 
-  it('tracks worker heartbeats and reports liveness', async () => {
+  it('retries a failed job slot up to maxAttempts and reports lastSuccessfulJob', async () => {
+    const first = await claimJob(db.client, { jobName: 'retry_job', slotKey: 'slot-r1', workerId: 'w1', maxAttempts: 2 });
+    expect(first.claimed).toBe(true);
+    await finishJob(db.client, { jobRunId: first.jobRunId as number, status: 'FAILED', error: 'transient network failure' });
+
+    const second = await claimJob(db.client, {
+      jobName: 'retry_job',
+      slotKey: 'slot-r1',
+      workerId: 'w2',
+      retryFailed: true,
+      maxAttempts: 2,
+    });
+    expect(second.claimed).toBe(true);
+    expect(second.reason).toContain('retried failed slot');
+
+    await finishJob(db.client, { jobRunId: second.jobRunId as number, status: 'FAILED', error: 'still failing' });
+    const exhausted = await claimJob(db.client, {
+      jobName: 'retry_job',
+      slotKey: 'slot-r1',
+      workerId: 'w3',
+      retryFailed: true,
+      maxAttempts: 2,
+    });
+    expect(exhausted.claimed).toBe(false);
+    expect(exhausted.reason).toBe('already FAILED');
+
+    const latestSuccess = await lastSuccessfulJob(db.client);
+    expect(latestSuccess?.status).toBe('SUCCEEDED');
+    const byKind = await lastSuccessfulJobsByKind(db.client);
+    expect(byKind['test_job2']?.jobName).toBe('test_job2');
+  });
+
+  it('bulk-recovers abandoned RUNNING jobs via recoverStaleJobs', async () => {
+    const staleClaim = await claimJob(db.client, { jobName: 'abandoned_job', slotKey: 'slot-a1', workerId: 'crashed-gha' });
+    expect(staleClaim.claimed).toBe(true);
+    await db.client.query(`update job_runs set started_at = now() - interval '15 minutes' where id = $1`, [staleClaim.jobRunId]);
+    const recovered = await recoverStaleJobs(db.client, 300);
+    expect(recovered.jobRunsRecovered).toBeGreaterThanOrEqual(1);
+    const check = await db.client.query<{ status: string }>(`select status from job_runs where id = $1`, [staleClaim.jobRunId]);
+    expect(check.rows[0]?.status).toBe('STALE');
+  });
+
+  it('tracks worker heartbeats and reports liveness (including stopped one-shot workers)', async () => {
     await upsertHeartbeat(db.client, {
       workerId: 'worker-1',
       instanceLabel: 'test',
@@ -472,6 +524,20 @@ describe('job coordination', () => {
     let statuses = await workerStatus(db.client);
     expect(statuses[0]?.liveness).toBe('CONNECTED');
     expect(statuses[0]?.lastJob).toBe('ingest_market_data');
+
+    // A one-shot worker that exits cleanly marks stopping: true so it is never reported as CONNECTED.
+    await upsertHeartbeat(db.client, {
+      workerId: 'worker-1',
+      instanceLabel: 'test',
+      version: 'v1',
+      lastJob: 'ingest_market_data',
+      jobsCompleted: 3,
+      cyclesRun: 5,
+      metadata: { stopping: true, active: false },
+    });
+    statuses = await workerStatus(db.client);
+    expect(statuses[0]?.liveness).toBe('STOPPING');
+
     // Simulate a dead worker.
     await db.client.query(`update worker_heartbeats set last_seen_at = now() - interval '30 minutes' where worker_id = 'worker-1'`);
     statuses = await workerStatus(db.client);

@@ -10,7 +10,7 @@
 import { OUTCOME_RULE_VERSION, settleSignal, toIso, type SignalRecord } from '@vortex/core';
 import { applySettlement, bumpSettlementAttempt, dueForSettlement, getCandles, raiseAlert, type SqlClient, syncPosition } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
-import { withJob } from './job.js';
+import { withJob, type WithJobOptions } from './job.js';
 
 export interface SettlementSummary {
   candidates: number;
@@ -209,9 +209,13 @@ async function syncPaper(runtime: WorkerRuntime, signal: SignalRecord, entryPric
   }
 }
 
-export async function runSettlementJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runSettlementJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const slot = `settle-${toIso(Math.floor(now.getTime() / 15_000) * 15_000)}`;
-  await withJob(
+  return withJob(
     runtime,
     'settle_signals',
     slot,
@@ -219,6 +223,6 @@ export async function runSettlementJob(runtime: WorkerRuntime, now = new Date())
       const summary = await runSettlementCycle(runtime, now);
       return { status: 'SUCCEEDED', detail: { ...summary } };
     },
-    { staleAfterSeconds: 120, alertCode: 'settlement-failing' },
+    { staleAfterSeconds: 120, alertCode: 'settlement-failing', ...options },
   );
 }
