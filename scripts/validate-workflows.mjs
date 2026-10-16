@@ -121,6 +121,14 @@ for (const scheduled of ['vortex-jobs.yml', 'vortex-learning.yml']) {
   }
 }
 
+// The scheduled provider job must pass all supported server-only key secrets.
+const jobsWorkflow = readFileSync(join(workflowsDir, 'vortex-jobs.yml'), 'utf8');
+for (const name of ['TWELVEDATA_API_KEY', 'TWELVEDATA_API_KEY_2', 'TWELVEDATA_API_KEY_3', 'TWELVEDATA_API_KEY_4']) {
+  if (!jobsWorkflow.includes(name + ': ${{ secrets.' + name + ' }}')) {
+    errors.push(`vortex-jobs.yml: missing Actions secret mapping for ${name}`);
+  }
+}
+
 // Ensure no script in scripts/ executes `supabase db reset`.
 for (const entry of readdirSync(join(root, 'scripts'))) {
   if (entry === 'validate-workflows.mjs' || entry === 'sync-supabase-migrations.mjs') continue;
