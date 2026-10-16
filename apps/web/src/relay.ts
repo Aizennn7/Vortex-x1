@@ -375,6 +375,119 @@ export function wilsonInterval(successes: number, total: number, z = 1.96): { lo
   };
 }
 
+/* ------------------------------------------------------------------------- */
+/* Dashboard state reducers (pure, so the panel states are unit tested)       */
+/* ------------------------------------------------------------------------- */
+
+export type RelayLoadable<T> =
+  | { state: 'loading' }
+  | { state: 'ready'; value: T }
+  | { state: 'error'; message: string; kind: RelayFailureKind };
+
+export interface RelayState<T> {
+  result: RelayLoadable<T>;
+  /** Set when the newest attempt failed; the previous value is still shown. */
+  lastError: { message: string; kind: RelayFailureKind } | null;
+  refreshedAt: string | null;
+}
+
+export const INITIAL_RELAY_STATE: RelayState<never> = {
+  result: { state: 'loading' },
+  lastError: null,
+  refreshedAt: null,
+};
+
+/**
+ * Fold one read result into the panel state.
+ *
+ * A failure NEVER discards data that was read successfully: the last good
+ * payload stays on screen with `lastError` set, so a transient blip cannot
+ * blank the board into a misleading "everything is broken" screen. Only a
+ * failure with nothing to fall back on produces an error state.
+ */
+export function reduceRelayState<T>(
+  previous: RelayState<T>,
+  response: RelayResult<T>,
+  at = new Date().toISOString(),
+): RelayState<T> {
+  if (response.ok && response.data !== null) {
+    return { result: { state: 'ready', value: response.data }, lastError: null, refreshedAt: at };
+  }
+  const error = { message: response.error ?? 'unknown error', kind: response.kind };
+  if (previous.result.state === 'ready') {
+    return { result: previous.result, lastError: error, refreshedAt: previous.refreshedAt };
+  }
+  return {
+    result: { state: 'error', message: error.message, kind: error.kind },
+    lastError: error,
+    refreshedAt: previous.refreshedAt,
+  };
+}
+
+export interface DashboardBanner {
+  tone: 'warn' | 'error';
+  text: string;
+}
+
+/** Safety banners, in priority order. Simulated data outranks everything. */
+export function buildDashboardBanner(params: {
+  synthetic: boolean | null;
+  ready: boolean | null;
+  reasons: string[];
+  stalePairs: string[];
+}): DashboardBanner | null {
+  if (params.synthetic === true) {
+    return {
+      tone: 'warn',
+      text: 'This deployment is running on the SIMULATED data feed. Nothing shown here reflects live market data.',
+    };
+  }
+  if (params.ready === false) {
+    return { tone: 'warn', text: `Data source answered but reports not ready: ${params.reasons.join('; ')}` };
+  }
+  if (params.stalePairs.length > 0) {
+    return {
+      tone: 'warn',
+      text: `Stale market data detected for ${params.stalePairs.join(', ')}. Signals are suppressed (NO-TRADE) when candle age exceeds the freshness threshold.`,
+    };
+  }
+  return null;
+}
+
+export function isRowStale(row: MarketQualityRow): boolean {
+  return row.stale === true || row.status === 'DEGRADED' || row.status === 'DISCONNECTED';
+}
+
+export function stalePairs(rows: MarketQualityRow[]): string[] {
+  return rows.filter(isRowStale).map((row) => row.pair);
+}
+
+/** `undefined` means "no opinion yet" — the card then shows no badge at all. */
+export function workerBadge(
+  worker: SummaryPayload['worker'],
+  lastJob: SummaryPayload['lastSuccessfulJob'],
+): string | undefined {
+  if (worker?.liveness === 'CONNECTED' && worker.running !== false) return 'CONNECTED';
+  if (worker || lastJob) return 'DISCONNECTED';
+  return 'NOT VERIFIED';
+}
+
+export function marketDataBadge(rows: MarketQualityRow[]): string {
+  if (rows.length === 0) return 'NOT VERIFIED';
+  if (rows.some(isRowStale)) return 'DEGRADED';
+  if (rows.some((row) => row.status === 'CONNECTED')) return 'CONNECTED';
+  return 'NOT VERIFIED';
+}
+
+/**
+ * How a pair's freshness should read on the card. Pure text: the dashboard must
+ * stay understandable without relying on colour.
+ */
+export function marketDataLabel(row: MarketQualityRow): string {
+  const ageLabel = row.ageSeconds === null ? 'no candles' : `${row.ageSeconds}s old`;
+  return `${row.status} · ${ageLabel}${isRowStale(row) ? ' (STALE — signals suppressed)' : ' (fresh)'}`;
+}
+
 /**
  * Recompute live candle age and staleness relative to `nowMs` so the dashboard
  * never claims stale data is fresh when no job has run recently.

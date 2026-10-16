@@ -8,18 +8,27 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildDashboardBanner,
   classifyFailure,
   computeMarketDataStaleness,
   createSnapshotClient,
   createSupabasePublicClient,
   failureGuidance,
   isSetupRequiredError,
+  marketDataBadge,
+  marketDataLabel,
   normalizeWorkerLiveness,
+  reduceRelayState,
+  stalePairs,
   relay,
   summarizeLearningRuns,
   summarizeModelVersions,
   wilsonInterval,
+  workerBadge,
   RELAY_BASE,
+  type MarketQualityRow,
+  type RelayFailureKind,
+  type RelayResult,
 } from '../src/relay.js';
 
 afterEach(() => {
@@ -451,5 +460,99 @@ describe('snapshot client caching', () => {
     await client.health();
     await client.health();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dashboard state reducers', () => {
+  const ok = <T,>(data: T): RelayResult<T> => ({ ok: true, status: 200, data, error: null, kind: 'none' });
+  const failed = <T,>(message: string, kind: RelayFailureKind = 'error'): RelayResult<T> => ({
+    ok: false,
+    status: 500,
+    data: null,
+    error: message,
+    kind,
+  });
+
+  it('reports an error state when the very first read fails', () => {
+    const state = reduceRelayState({ result: { state: 'loading' }, lastError: null, refreshedAt: null }, failed('boom'));
+    expect(state.result).toEqual({ state: 'error', message: 'boom', kind: 'error' });
+    expect(state.lastError?.message).toBe('boom');
+  });
+
+  it('keeps the last good payload when a later refresh fails', () => {
+    const first = reduceRelayState(
+      { result: { state: 'loading' }, lastError: null, refreshedAt: null },
+      ok({ value: 42 }),
+      '2026-03-01T00:00:00.000Z',
+    );
+    const second = reduceRelayState(first, failed('relay unreachable', 'unreachable'), '2026-03-01T00:05:00.000Z');
+    expect(second.result).toEqual({ state: 'ready', value: { value: 42 } });
+    expect(second.lastError?.kind).toBe('unreachable');
+    // The timestamp must keep pointing at the last SUCCESSFUL read.
+    expect(second.refreshedAt).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  it('clears the error once a refresh succeeds again', () => {
+    const withError = reduceRelayState(
+      { result: { state: 'ready', value: 1 }, lastError: { message: 'boom', kind: 'error' }, refreshedAt: '2026-03-01T00:00:00.000Z' },
+      ok(2),
+      '2026-03-01T00:10:00.000Z',
+    );
+    expect(withError.result).toEqual({ state: 'ready', value: 2 });
+    expect(withError.lastError).toBeNull();
+    expect(withError.refreshedAt).toBe('2026-03-01T00:10:00.000Z');
+  });
+
+  it('never treats a successful-but-empty read as data', () => {
+    const state = reduceRelayState(
+      { result: { state: 'loading' }, lastError: null, refreshedAt: null },
+      { ok: true, status: 200, data: null, error: null, kind: 'none' },
+    );
+    expect(state.result.state).toBe('error');
+  });
+});
+
+describe('dashboard banners and badges', () => {
+  it('warns about simulated data before anything else', () => {
+    const banner = buildDashboardBanner({ synthetic: true, ready: false, reasons: ['no keys'], stalePairs: ['EUR/USD'] });
+    expect(banner?.text).toMatch(/SIMULATED/);
+  });
+
+  it('surfaces a not-ready data source', () => {
+    const banner = buildDashboardBanner({ synthetic: false, ready: false, reasons: ['database not reachable'], stalePairs: [] });
+    expect(banner?.text).toMatch(/database not reachable/);
+  });
+
+  it('surfaces stale pairs when everything else is healthy', () => {
+    const banner = buildDashboardBanner({ synthetic: false, ready: true, reasons: [], stalePairs: ['GBP/USD'] });
+    expect(banner?.text).toMatch(/GBP\/USD/);
+    expect(banner?.text).toMatch(/NO-TRADE/);
+  });
+
+  it('shows no banner when the deployment is healthy', () => {
+    expect(buildDashboardBanner({ synthetic: false, ready: true, reasons: [], stalePairs: [] })).toBeNull();
+  });
+
+  it('never reports a stopped worker as connected', () => {
+    expect(workerBadge({ workerId: 'w', liveness: 'STOPPING', running: false, secondsSince: 5, lastJob: null }, null)).toBe('DISCONNECTED');
+    expect(workerBadge({ workerId: 'w', liveness: 'CONNECTED', running: true, secondsSince: 3, lastJob: 'ingest' }, null)).toBe('CONNECTED');
+    expect(workerBadge(null, null)).toBe('NOT VERIFIED');
+    expect(workerBadge(null, { jobName: 'ingest', slotKey: 's', finishedAt: '2026-03-01T00:00:00.000Z', ageSeconds: 600 })).toBe('DISCONNECTED');
+  });
+
+  it('degrades the market-data badge on stale rows and verifies nothing on an empty table', () => {
+    const fresh: MarketQualityRow = { pair: 'EUR/USD', status: 'CONNECTED', ageSeconds: 20, detail: null, stale: false };
+    const stale: MarketQualityRow = { pair: 'GBP/USD', status: 'DISCONNECTED', ageSeconds: 900, detail: null, stale: true };
+    expect(marketDataBadge([fresh])).toBe('CONNECTED');
+    expect(marketDataBadge([fresh, stale])).toBe('DEGRADED');
+    expect(marketDataBadge([])).toBe('NOT VERIFIED');
+    expect(stalePairs([fresh, stale])).toEqual(['GBP/USD']);
+  });
+
+  it('labels a stale pair in words, not colour', () => {
+    const label = marketDataLabel({ pair: 'EUR/USD', status: 'CONNECTED', ageSeconds: 400, detail: null, stale: true });
+    expect(label).toMatch(/STALE/);
+    const empty = marketDataLabel({ pair: 'EUR/USD', status: 'NOT VERIFIED', ageSeconds: null, detail: null, stale: false });
+    expect(empty).toMatch(/no candles/);
   });
 });

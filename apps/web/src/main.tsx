@@ -19,23 +19,23 @@ import {
   DATA_SOURCE_MODE,
   RELAY_BASE,
   SUPABASE_URL,
+  buildDashboardBanner,
   failureGuidance,
+  marketDataBadge as marketDataBadgeFor,
+  marketDataLabel,
+  reduceRelayState,
   relay,
+  stalePairs as stalePairsOf,
   wilsonInterval,
+  workerBadge as workerBadgeFor,
   type HealthPayload,
   type RelayFailureKind,
+  type RelayResult,
+  type RelayState,
   type SignalRow,
   type SummaryPayload,
 } from './relay.js';
 import './styles.css';
-
-type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | { state: 'error'; message: string; kind: RelayFailureKind };
-
-interface RelayState<T> {
-  result: Loadable<T>;
-  lastError: { message: string; kind: RelayFailureKind } | null;
-  refreshedAt: string | null;
-}
 
 /**
  * Poll a read endpoint. On failure the previous successful payload is kept and
@@ -43,7 +43,7 @@ interface RelayState<T> {
  * the board into a misleading "everything is broken" screen.
  */
 function useRelay<T>(
-  loader: () => Promise<{ ok: boolean; data: T | null; error: string | null; kind: RelayFailureKind }>,
+  loader: () => Promise<RelayResult<T>>,
   pollMs: number,
 ): RelayState<T> & { refresh: () => Promise<void> } {
   const [state, setState] = useState<RelayState<T>>({ result: { state: 'loading' }, lastError: null, refreshedAt: null });
@@ -52,19 +52,7 @@ function useRelay<T>(
   const refresh = useCallback(async () => {
     const response = await loader();
     if (!mounted.current) return;
-    setState((previous) => {
-      if (response.ok && response.data !== null) {
-        return {
-          result: { state: 'ready', value: response.data },
-          lastError: null,
-          refreshedAt: new Date().toISOString(),
-        };
-      }
-      const error = { message: response.error ?? 'unknown error', kind: response.kind };
-      // Keep the last good payload when there is one; otherwise report the error.
-      if (previous.result.state === 'ready') return { ...previous, lastError: error };
-      return { result: { state: 'error', message: error.message, kind: error.kind }, lastError: error, refreshedAt: previous.refreshedAt };
-    });
+    setState((previous) => reduceRelayState(previous, response));
   }, [loader]);
 
   useEffect(() => {
@@ -190,31 +178,20 @@ function Dashboard() {
   const model = summaryValue?.model ?? null;
   const learning = summaryValue?.learning ?? null;
 
-  const stalePairs = useMemo(
-    () => marketData.filter((m) => m.stale === true || m.status === 'DEGRADED' || m.status === 'DISCONNECTED').map((m) => m.pair),
-    [marketData],
-  );
+  const stalePairs = useMemo(() => stalePairsOf(marketData), [marketData]);
 
   const synthetic = health.result.state === 'ready' ? health.result.value.provider.synthetic : null;
   const healthWarning = health.lastError ?? summary.lastError ?? signals.lastError;
-  const banner = useMemo(() => {
-    if (synthetic === true) {
-      return {
-        tone: 'warn',
-        text: 'This deployment is running on the SIMULATED data feed. Nothing shown here reflects live market data.',
-      };
-    }
-    if (health.result.state === 'ready' && !health.result.value.ready) {
-      return { tone: 'warn', text: `Data source answered but reports not ready: ${health.result.value.reasons.join('; ')}` };
-    }
-    if (stalePairs.length > 0) {
-      return {
-        tone: 'warn',
-        text: `Stale market data detected for ${stalePairs.join(', ')}. Signals are suppressed (NO-TRADE) when candle age exceeds the freshness threshold.`,
-      };
-    }
-    return null;
-  }, [synthetic, health.result, stalePairs]);
+  const banner = useMemo(
+    () =>
+      buildDashboardBanner({
+        synthetic,
+        ready: health.result.state === 'ready' ? health.result.value.ready : null,
+        reasons: health.result.state === 'ready' ? health.result.value.reasons : [],
+        stalePairs,
+      }),
+    [synthetic, health.result, stalePairs],
+  );
 
   const sourceDescription =
     DATA_SOURCE_MODE === 'supabase'
@@ -226,19 +203,8 @@ function Dashboard() {
   const sourceBadge =
     health.result.state !== 'ready' ? undefined : health.result.value.status === 'ok' ? 'CONNECTED' : 'DEGRADED';
 
-  const workerBadge =
-    !summaryValue ? undefined : worker?.liveness === 'CONNECTED' && worker.running !== false ? 'CONNECTED' : worker || lastJob ? 'DISCONNECTED' : 'NOT VERIFIED';
-
-  const marketDataBadge =
-    !summaryValue
-      ? undefined
-      : marketData.length === 0
-        ? 'NOT VERIFIED'
-        : stalePairs.length > 0
-          ? 'DEGRADED'
-          : marketData.some((m) => m.status === 'CONNECTED')
-            ? 'CONNECTED'
-            : 'NOT VERIFIED';
+  const workerBadge = summaryValue ? workerBadgeFor(worker, lastJob) : undefined;
+  const marketDataBadge = summaryValue ? marketDataBadgeFor(marketData) : undefined;
 
   const accuracyInterval =
     signalsValue && signalsValue.decisive > 0 ? wilsonInterval(signalsValue.wins, signalsValue.decisive) : null;
@@ -345,20 +311,15 @@ function Dashboard() {
               </p>
             ) : (
               <dl className="facts">
-                {marketData.map((row) => {
-                  const isStale = row.stale === true || row.status === 'DEGRADED' || row.status === 'DISCONNECTED';
-                  const ageLabel = row.ageSeconds === null ? 'no candles' : `${row.ageSeconds}s old`;
-                  return (
-                    <div key={row.pair}>
-                      <dt>{row.pair}</dt>
-                      <dd>
-                        {row.status} · {ageLabel}
-                        {isStale ? ' (STALE — signals suppressed)' : ' (fresh)'}
-                        {row.detail ? <span className="muted"> · {row.detail}</span> : null}
-                      </dd>
-                    </div>
-                  );
-                })}
+                {marketData.map((row) => (
+                  <div key={row.pair}>
+                    <dt>{row.pair}</dt>
+                    <dd>
+                      {marketDataLabel(row)}
+                      {row.detail ? <span className="muted"> · {row.detail}</span> : null}
+                    </dd>
+                  </div>
+                ))}
               </dl>
             )
           ) : null}
