@@ -8,11 +8,17 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  classifyFailure,
   computeMarketDataStaleness,
   createSnapshotClient,
   createSupabasePublicClient,
+  failureGuidance,
+  isSetupRequiredError,
   normalizeWorkerLiveness,
   relay,
+  summarizeLearningRuns,
+  summarizeModelVersions,
+  wilsonInterval,
   RELAY_BASE,
 } from '../src/relay.js';
 
@@ -254,5 +260,196 @@ describe('relay client', () => {
     expect(summary.data?.worker?.running).toBe(false);
     expect(summary.data?.lastSuccessfulJob?.ageSeconds).toBeGreaterThan(600);
     expect(summary.data?.marketData[0]?.stale).toBe(true);
+  });
+});
+
+describe('failure classification', () => {
+  it('recognises missing Supabase tables/views as a setup problem, not a bug', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          { code: '42P01', message: 'relation "public.public_worker_status" does not exist' },
+          404,
+        ),
+      ),
+    );
+    const client = createSupabasePublicClient({ url: 'https://example.supabase.co', anonKey: 'anon' });
+    const result = await client.summary();
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe('setup-required');
+  });
+
+  it('reports an unreachable origin as unreachable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+    );
+    const client = createSupabasePublicClient({ url: 'https://example.supabase.co', anonKey: 'anon' });
+    const result = await client.health();
+    expect(result.kind).toBe('unreachable');
+  });
+
+  it('reports a rejected key as unauthorized', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ message: 'Invalid API key' }, 401)));
+    const client = createSupabasePublicClient({ url: 'https://example.supabase.co', anonKey: 'anon' });
+    const result = await client.signals(5);
+    expect(result.kind).toBe('unauthorized');
+  });
+
+  it('classifies plain server errors as errors', () => {
+    expect(classifyFailure(500, 'boom')).toBe('error');
+    expect(classifyFailure(0, 'offline')).toBe('unreachable');
+    expect(classifyFailure(404, 'relation "x" does not exist')).toBe('setup-required');
+    expect(isSetupRequiredError(400, 'Could not find the table public.public_alerts')).toBe(true);
+    expect(isSetupRequiredError(200, 'fine')).toBe(false);
+  });
+
+  it('gives mode-specific guidance for a missing schema', () => {
+    expect(failureGuidance('setup-required', 'supabase')).toMatch(/migrations/);
+    expect(failureGuidance('unreachable', 'relay')).toMatch(/could not reach/);
+  });
+});
+
+describe('model and learning panels', () => {
+  it('reports no champion honestly when only rejected candidates exist', () => {
+    const summary = summarizeModelVersions([
+      {
+        id: 'm1',
+        version: 'candidate-1',
+        status: 'REJECTED',
+        dataset_size: 220,
+        dataset_from: null,
+        dataset_to: null,
+        metrics: { accuracy: 0.51 },
+        walk_forward: [],
+        promoted_at: null,
+        created_at: '2026-03-01T00:00:00.000Z',
+      },
+    ]);
+    expect(summary.champion).toBeNull();
+    expect(summary.rejectedCount).toBe(1);
+    expect(summary.note).toMatch(/rule ensemble keeps serving/);
+  });
+
+  it('surfaces the champion metrics and its walk-forward folds', () => {
+    const summary = summarizeModelVersions([
+      {
+        id: 'm2',
+        version: 'candidate-2',
+        status: 'CHAMPION',
+        dataset_size: 900,
+        dataset_from: '2026-01-01T00:00:00.000Z',
+        dataset_to: '2026-03-01T00:00:00.000Z',
+        metrics: { accuracy: 0.58, auc: 0.61, logLoss: 0.66, ece: 0.08, samples: 180, baseRate: 0.5 },
+        walk_forward: [
+          { fold: 1, trainSize: 400, validationSize: 60, metrics: { accuracy: 0.57 } },
+          { fold: 2, trainSize: 500, validationSize: 60, metrics: { accuracy: 0.6 } },
+        ],
+        promoted_at: '2026-03-02T00:00:00.000Z',
+        created_at: '2026-03-01T12:00:00.000Z',
+      },
+    ]);
+    expect(summary.champion?.version).toBe('candidate-2');
+    expect(summary.champion?.metrics?.auc).toBeCloseTo(0.61, 5);
+    expect(summary.champion?.walkForward.map((f) => f.accuracy)).toEqual([0.57, 0.6]);
+  });
+
+  it('explains a skipped learning run instead of hiding it', () => {
+    const summary = summarizeLearningRuns([
+      {
+        started_at: '2026-03-04T03:00:00.000Z',
+        finished_at: '2026-03-04T03:00:02.000Z',
+        status: 'SKIPPED',
+        dataset_size: 400,
+        dataset_from: null,
+        dataset_to: null,
+        error: 'dataset abc… was already trained successfully',
+      },
+      {
+        started_at: '2026-03-03T03:00:00.000Z',
+        finished_at: '2026-03-03T03:01:00.000Z',
+        status: 'SUCCEEDED',
+        dataset_size: 390,
+        dataset_from: null,
+        dataset_to: null,
+        error: null,
+      },
+    ]);
+    expect(summary.lastRun?.status).toBe('SKIPPED');
+    expect(summary.lastRun?.reason).toMatch(/already trained/);
+    expect(summary.counts).toEqual({ SKIPPED: 1, SUCCEEDED: 1 });
+  });
+
+  it('returns an empty learning panel when no run exists', () => {
+    const summary = summarizeLearningRuns([]);
+    expect(summary.lastRun).toBeNull();
+    expect(summary.counts).toEqual({});
+  });
+});
+
+describe('accuracy uncertainty helpers', () => {
+  it('widens the interval as the sample shrinks', () => {
+    const small = wilsonInterval(6, 10);
+    const large = wilsonInterval(600, 1000);
+    expect(small).not.toBeNull();
+    expect(large).not.toBeNull();
+    expect(small!.upper - small!.lower).toBeGreaterThan(large!.upper - large!.lower);
+    expect(small!.lower).toBeLessThan(0.6);
+    expect(small!.upper).toBeGreaterThan(0.6);
+  });
+
+  it('has no interval without a sample', () => {
+    expect(wilsonInterval(0, 0)).toBeNull();
+  });
+});
+
+describe('snapshot client caching', () => {
+  it('serves one download for a burst of reads inside the cache window', async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        configured: true,
+        generatedAt: new Date().toISOString(),
+        health: {
+          service: 'vortex-si-snapshot',
+          status: 'ok',
+          version: 'v',
+          uptimeSeconds: 0,
+          database: { ok: true, detail: 'ok' },
+          provider: { name: 'twelvedata', synthetic: false },
+          ready: true,
+          reasons: [],
+          note: 'snapshot',
+          timestamp: new Date().toISOString(),
+        },
+        summary: {
+          worker: null,
+          lastSuccessfulJob: null,
+          marketData: [],
+          providerBudget: null,
+          signals: null,
+          telegram: { configuration: { status: 'NOT CONFIGURED', detail: 'off' }, sent: 0, failed: 0, unconfirmed: 0 },
+          alerts: [],
+        },
+        config: {},
+        signals: { signals: [], count: 0 },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+    const client = createSnapshotClient('./snapshot.json', { cacheMs: 1_000 });
+    await Promise.all([client.health(), client.summary(), client.signals(), client.config()]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-downloads once the cache window has passed', async () => {
+    const fetchSpy = vi.fn(async () => jsonResponse({ ok: true, configured: false }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const client = createSnapshotClient('./snapshot.json', { cacheMs: 0 });
+    await client.health();
+    await client.health();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });

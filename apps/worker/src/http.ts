@@ -62,6 +62,7 @@ import {
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
+import { modelRegistrySummary } from './services/registry.js';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runSignalCycle } from './jobs/signals.js';
@@ -405,12 +406,14 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       providerBudget: null,
       signals: null,
       telegram: runtime.telegram.configuration(),
+      model: null,
+      learning: null,
       alerts: [],
       note: 'Summary is limited because the database is not reachable.',
     };
   }
   const client = db(runtime);
-  const [workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components] = await Promise.all([
+  const [workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components, registry] = await Promise.all([
     workerStatus(client),
     lastSuccessfulJob(client),
     listQuality(client),
@@ -419,6 +422,7 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     listDeliveries(client, 50),
     listAlerts(client, false, 20),
     healthSnapshot(runtime),
+    modelRegistrySummary(client),
   ]);
   const nowMs = Date.now();
   const quality = refreshQualityFreshness(rawQuality, runtime.config.maxCandleAgeSeconds, nowMs);
@@ -495,6 +499,8 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       unconfirmed: deliveries.filter((d) => d.status === 'UNKNOWN').length,
     },
     components,
+    model: registry.model,
+    learning: registry.learning,
     alerts: alerts.map((a) => ({ severity: a.severity, code: a.code, title: a.title, lastSeenAt: a.lastSeenAt })),
   };
 }
