@@ -15,6 +15,11 @@ import react from '@vitejs/plugin-react';
  * developer's machine). `VITE_RELAY_URL` overrides the API base for a
  * deployment where the relay lives on a different origin — on GitHub Pages it
  * must, because the relay URL is only known once the relay is deployed.
+ *
+ * `VITE_DEV_ALLOWED_HOSTS` is an explicit opt-in for serving the dev server
+ * through a tunnel, container hostname or hosted preview. Vite rejects unknown
+ * `Host` headers by default; listing them here keeps that protection on for
+ * every other host. Leave it empty for normal local development.
  */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
@@ -27,6 +32,10 @@ export default defineConfig(({ mode }) => {
   const dataSource = process.env.VITE_DATA_SOURCE ?? env.VITE_DATA_SOURCE ?? '';
   const base = (process.env.VITE_BASE_PATH ?? env.VITE_BASE_PATH ?? './').trim() || './';
   const devRelay = env.VITE_DEV_RELAY ?? 'http://127.0.0.1:8787';
+  const allowedHosts = (process.env.VITE_DEV_ALLOWED_HOSTS ?? env.VITE_DEV_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 
   // Hard build-time guard: never allow a Supabase service_role or secret key
   // to be passed as VITE_SUPABASE_ANON_KEY.
@@ -70,6 +79,8 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: 5173,
       strictPort: false,
+      // `undefined` keeps Vite's default host check exactly as it is.
+      allowedHosts: allowedHosts.length > 0 ? allowedHosts : undefined,
       proxy:
         relayUrl.length > 0
           ? undefined
