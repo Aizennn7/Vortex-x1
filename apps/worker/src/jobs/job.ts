@@ -67,7 +67,20 @@ export async function withJob(
       });
       runtime.bump('jobsCompleted');
       runtime.counters.cyclesRun += 1;
-      if (options.alertCode) await resolveAlert(db, options.alertCode).catch(() => undefined);
+      if (options.alertCode && outcome.status === 'FAILED') {
+        // A job that reports FAILED through its return value must raise the
+        // alert, never clear it: an outage that resolves its own alarm is the
+        // worst kind of false success.
+        await raiseAlert(db, {
+          severity: 'ERROR',
+          code: options.alertCode,
+          title: `${jobName} reported a failed cycle`,
+          detail: outcome.error ?? 'the cycle completed without doing its work',
+          metadata: { job: jobName, slot: slotKey, workerId: runtime.config.workerId, ...(detail ?? {}) },
+        }).catch(() => undefined);
+      } else if (options.alertCode) {
+        await resolveAlert(db, options.alertCode).catch(() => undefined);
+      }
       runtime.logger.debug('job finished', {
         component: 'jobs',
         job: jobName,

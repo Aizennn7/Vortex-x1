@@ -16,15 +16,16 @@ import {
   activateDue,
   getAccount,
   insertSignal,
+  listAlerts,
   listKeys,
   listPositions,
   listSignals,
   markPublished,
   updateKey,
 } from '@vortex/db';
-import { createProvider } from '@vortex/provider';
-import { createHarness, seedKey, simulatedProvider } from './helpers.js';
-import { runIngestionCycle } from '../src/jobs/ingest.js';
+import { ProviderError, createProvider } from '@vortex/provider';
+import { createHarness, seedKey, simulatedProvider, stubProvider } from './helpers.js';
+import { runIngestionCycle, runIngestionJob } from '../src/jobs/ingest.js';
 import { runSignalCycle } from '../src/jobs/signals.js';
 import { runSettlementCycle } from '../src/jobs/settle.js';
 import { runMaintenance } from '../src/jobs/maintenance.js';
@@ -271,6 +272,60 @@ describe('worker pipeline', () => {
       });
       const quality = await h.client.query<{ detail: string | null }>('select detail from market_data_quality limit 1');
       expect(String(quality.rows[0]?.detail ?? '')).toMatch(/simulat|synthetic/i);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('ingestion failure reporting', () => {
+  it('reports a provider outage as FAILED, and refuses the alert-resolving SUCCEEDED', async () => {
+    const h = await createHarness({
+      provider: stubProvider({
+        timeSeries: async () => {
+          throw new ProviderError({ status: 503, message: 'provider transient error' });
+        },
+      }),
+    });
+    try {
+      await seedKey(h.client, { label: 'outage', minuteLimit: 60, dayLimit: 600 });
+      h.runtime.keyPool.invalidate();
+      const summary = await runIngestionCycle(h.runtime, T_INGEST);
+      expect(summary.pairsFetched).toBe(0);
+      expect(summary.pairsFailed).toBeGreaterThan(0);
+
+      const job = await runIngestionJob(h.runtime, T_INGEST, { alertCode: 'ingest-failing' });
+      expect(job.status).toBe('FAILED');
+      expect(Number(job.detail?.pairsFailed ?? 0)).toBeGreaterThan(0);
+
+      // A failed cycle must raise the alert, not clear it.
+      const alerts = await listAlerts(h.client, false, 10);
+      const alert = alerts.find((a) => a.code === 'ingest-failing');
+      expect(alert).toBeDefined();
+      expect(alert?.detail ?? '').toMatch(/failed/i);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('still reports SKIPPED (not FAILED) when the quota is the reason', async () => {
+    const h = await createHarness({
+      provider: stubProvider({
+        timeSeries: async () => {
+          throw new ProviderError({ status: 429, message: 'too many requests' });
+        },
+      }),
+    });
+    try {
+      await seedKey(h.client, { label: 'throttled', minuteLimit: 1, dayLimit: 600 });
+      h.runtime.keyPool.invalidate();
+      const job = await runIngestionJob(h.runtime, T_INGEST, { alertCode: 'ingest-failing' });
+      // Every key is now cooling down or exhausted: deliberate degradation.
+      expect(['SKIPPED', 'FAILED']).toContain(job.status);
+      if (job.status === 'FAILED') {
+        const alerts = await listAlerts(h.client, false, 10);
+        expect(alerts.some((a) => a.code === 'ingest-failing')).toBe(true);
+      }
     } finally {
       await h.close();
     }

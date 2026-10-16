@@ -27,6 +27,8 @@ import { withJob, type WithJobOptions } from './job.js';
 export interface IngestSummary {
   pairsConsidered: number;
   pairsFetched: number;
+  /** Fetches that failed for a non-quota reason (timeout, 5xx, bad payload…). */
+  pairsFailed: number;
   candlesInserted: number;
   candlesUpdated: number;
   rejected: number;
@@ -62,6 +64,7 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
   const summary: IngestSummary = {
     pairsConsidered: 0,
     pairsFetched: 0,
+    pairsFailed: 0,
     candlesInserted: 0,
     candlesUpdated: 0,
     rejected: 0,
@@ -170,9 +173,11 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
     if (!result.ok || !result.value) {
       summary.detail.push(`${pair}: ${result.error ?? 'fetch failed'}`);
       if (result.exhausted) {
+        // Quota/cooldown: deliberate degradation, not a failure of this job.
         summary.exhausted = true;
         break;
       }
+      summary.pairsFailed += 1;
       continue;
     }
 
@@ -267,6 +272,17 @@ export async function runIngestionJob(
     slot,
     async () => {
       const summary = await runIngestionCycle(runtime, now);
+      // Reporting an outage as SUCCEEDED would silently resolve the
+      // ingest-failing alert, so a cycle that attempted fetches and completed
+      // none of them is recorded as FAILED with the per-pair reasons.
+      const attempted = summary.pairsFetched + summary.pairsFailed;
+      if (attempted > 0 && summary.pairsFetched === 0 && !summary.exhausted) {
+        return {
+          status: 'FAILED',
+          error: `all ${attempted} provider fetch(es) failed: ${summary.detail.slice(0, 3).join('; ')}`,
+          detail: { ...summary },
+        };
+      }
       return { status: summary.exhausted ? 'SKIPPED' : 'SUCCEEDED', detail: { ...summary } };
     },
     { staleAfterSeconds: 180, alertCode: 'ingest-failing', ...options },
