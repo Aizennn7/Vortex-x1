@@ -22,7 +22,9 @@ import {
   insertSignal,
 } from '@vortex/db';
 import { createHarness } from './helpers.js';
+import { listHealth } from '@vortex/db';
 import { runLearningCycle } from '../src/jobs/learning.js';
+import { runMaintenance } from '../src/jobs/maintenance.js';
 
 const HORIZON_SECONDS = 300;
 const SAMPLE_COUNT = 200;
@@ -230,6 +232,26 @@ describe('learning cycle', () => {
       await h.close();
     }
   }, 180_000);
+
+  it('surfaces a failed learning run on the health panel', async () => {
+    const h = await createHarness({
+      env: { VORTEX_TRAIN_MIN_SAMPLES: '40', VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts' },
+    });
+    try {
+      await h.client.query(
+        `insert into learning_runs (worker_id, status, started_at, finished_at, error)
+         values ('test-worker', 'FAILED', now() - interval '5 minutes', now() - interval '4 minutes', 'training exploded')`,
+      );
+      const summary = await runMaintenance(h.runtime, new Date());
+      expect(summary.components.learning).toBe('DEGRADED');
+      const health = await listHealth(h.client);
+      const learning = health.find((c) => c.component === 'learning');
+      expect(learning?.status).toBe('DEGRADED');
+      expect(learning?.detail ?? '').toMatch(/training exploded/);
+    } finally {
+      await h.close();
+    }
+  }, 120_000);
 
   it('skips honestly when there are too few labelled outcomes', async () => {
     const h = await createHarness({
