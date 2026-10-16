@@ -202,15 +202,25 @@ export function evaluatePrediction(params: {
     hasHardFail || belowThreshold || combined.direction === 'NO_TRADE' ? 'NO_TRADE' : combined.direction;
 
   if (decision === 'NO_TRADE') {
-    reasons.unshift(
-      `NO-TRADE: ${gates.filter((g) => !g.passed).map((g) => g.gate).join(', ') || 'no directional consensus'}`,
-    );
+    // Abstention is a first-class outcome: the failed gate names are the
+    // machine-readable reason, and every signal built from this evaluation
+    // carries them into the database.
+    const abstainReason =
+      gates
+        .filter((g) => !g.passed)
+        .map((g) => g.gate)
+        .join(', ') || 'no directional consensus';
+    reasons.unshift(`NO-TRADE: ${abstainReason}`);
+    addGate('abstained', false, abstainReason);
   }
 
   return {
     result: {
       decision,
-      confidence: decision === 'NO_TRADE' ? Number(confidence.toFixed(4)) : Number(confidence.toFixed(4)),
+      // `confidence` is a 0..1 ranking score for the ensemble's own call — it is
+      // NOT a probability. `modelProbability` is the only calibrated number in
+      // this result, and it is null when no model is loaded.
+      confidence: Number(confidence.toFixed(4)),
       votes,
       reasons,
       warnings: [...new Set(warnings)],

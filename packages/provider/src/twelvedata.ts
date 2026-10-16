@@ -130,14 +130,20 @@ export class TwelveDataProvider implements MarketDataProvider {
     for (const row of values) {
       const openTime = normalizeDatetime(row.datetime);
       if (!openTime) continue;
+      const open = Number(row.open);
+      const high = Number(row.high);
+      const low = Number(row.low);
+      const close = Number(row.close);
+      if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) continue;
+      if (high < low || high < Math.max(open, close) - 1e-12 || low > Math.min(open, close) + 1e-12) continue;
       candles.push({
         pair: request.pair,
         timeframe: request.timeframe,
         openTime,
-        open: Number(row.open),
-        high: Number(row.high),
-        low: Number(row.low),
-        close: Number(row.close),
+        open,
+        high,
+        low,
+        close,
         volume: row.volume === undefined || row.volume === '' ? null : Number(row.volume),
         provider: this.name,
         // A candle is final when its window has closed. The provider returns

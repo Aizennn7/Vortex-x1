@@ -196,13 +196,23 @@ export interface Split {
   validation: TrainingSample[];
   test: TrainingSample[];
   embargoSeconds: number;
+  /** Number of rows removed by the embargo at each boundary. */
+  embargoed: { validation: number; test: number };
   boundaries: { trainEnd: string | null; validationEnd: string | null };
 }
 
 /**
- * Chronological split with an embargo equal to the signal horizon: rows whose
- * decision time falls inside the embargo are dropped so overlapping outcome
- * windows cannot leak across the boundary.
+ * Chronological split with an embargo.
+ *
+ * `embargoSeconds` MUST be at least the prediction horizon: two rows whose
+ * decision times are closer than one horizon share outcome candles, so a test
+ * row inside that window would leak information back into training. Callers
+ * that know the horizon should pass it (see `embargoForRecords`); the default
+ * is a conservative floor, never a licence to use a shorter window.
+ *
+ * The embargo is measured from the last row RETAINED in the earlier split, not
+ * from the intended index boundary, so dropping a row can never shorten the
+ * gap.
  */
 export function chronologicalSplit(
   samples: TrainingSample[],
@@ -211,48 +221,89 @@ export function chronologicalSplit(
 ): Split {
   const ordered = [...samples].sort((a, b) => new Date(a.decidedAt).getTime() - new Date(b.decidedAt).getTime());
   const n = ordered.length;
-  const trainEnd = Math.floor(n * ratios.train);
-  const validationEnd = trainEnd + Math.floor(n * ratios.validation);
-  if (n === 0) {
-    return { train: [], validation: [], test: [], embargoSeconds, boundaries: { trainEnd: null, validationEnd: null } };
-  }
-  const boundaryTime = (index: number): number =>
-    new Date(ordered[Math.min(Math.max(index - 1, 0), n - 1)]!.decidedAt).getTime();
+  const embargo = Math.max(0, Math.floor(embargoSeconds));
+  const empty: Split = {
+    train: [],
+    validation: [],
+    test: [],
+    embargoSeconds: embargo,
+    embargoed: { validation: 0, test: 0 },
+    boundaries: { trainEnd: null, validationEnd: null },
+  };
+  if (n === 0) return empty;
 
-  const trainBoundaryMs = boundaryTime(trainEnd);
-  const validationBoundaryMs = boundaryTime(validationEnd);
+  const trainEnd = Math.max(0, Math.min(n, Math.floor(n * ratios.train)));
+  const validationEnd = Math.max(trainEnd, Math.min(n, trainEnd + Math.floor(n * ratios.validation)));
+
+  const timeOf = (sample: TrainingSample): number => new Date(sample.decidedAt).getTime();
 
   const train = ordered.slice(0, trainEnd);
-  const validation = ordered
-    .slice(trainEnd, validationEnd)
-    .filter((s) => new Date(s.decidedAt).getTime() >= trainBoundaryMs + embargoSeconds * 1000 && new Date(s.decidedAt).getTime() <= validationBoundaryMs);
-  const test = ordered
-    .slice(validationEnd)
-    .filter((s) => new Date(s.decidedAt).getTime() >= validationBoundaryMs + embargoSeconds * 1000);
+  const lastTrainMs = train.length > 0 ? Math.max(...train.map(timeOf)) : Number.NEGATIVE_INFINITY;
+  const validationCut = validationEnd;
+
+  let validation = ordered
+    .slice(trainEnd, validationCut)
+    .filter((s) => timeOf(s) >= lastTrainMs + embargo * 1000);
+  const validationDropped = validationCut - trainEnd - validation.length;
+
+  const lastValidationMs = validation.length > 0 ? Math.max(...validation.map(timeOf)) : null;
+  // The test embargo is anchored to the last RETAINED validation row; when the
+  // embargo emptied the validation block, it is anchored to the last train row
+  // so the test block still cannot touch the training window.
+  const testAnchorMs = lastValidationMs ?? lastTrainMs;
+  const testSlice = ordered.slice(validationEnd);
+  let test = testSlice.filter((s) => timeOf(s) >= testAnchorMs + embargo * 1000);
+  const testDropped = testSlice.length - test.length;
 
   return {
     train,
     validation,
     test,
-    embargoSeconds,
+    embargoSeconds: embargo,
+    embargoed: { validation: validationDropped, test: testDropped },
     boundaries: {
-      trainEnd: ordered[trainEnd - 1]?.decidedAt ?? null,
-      validationEnd: ordered[validationEnd - 1]?.decidedAt ?? null,
+      trainEnd: lastTrainMs === Number.NEGATIVE_INFINITY ? null : train[train.length - 1]!.decidedAt,
+      validationEnd:
+        validation.length > 0
+          ? validation[validation.length - 1]!.decidedAt
+          : (ordered[Math.min(validationEnd, n) - 1]?.decidedAt ?? null),
     },
   };
+}
+
+/**
+ * The embargo that keeps overlapping outcome windows apart, derived from the
+ * records themselves: one full horizon (never less than 60s).
+ */
+export function embargoForRecords(records: { horizonSeconds?: number | null }[], fallbackSeconds = 60): number {
+  const horizons = records
+    .map((r) => (typeof r.horizonSeconds === 'number' && Number.isFinite(r.horizonSeconds) ? r.horizonSeconds : 0))
+    .filter((h) => h > 0);
+  const horizon = horizons.length === 0 ? 0 : Math.max(...horizons);
+  return Math.max(60, Math.ceil(horizon));
 }
 
 export interface WalkForwardFold {
   fold: number;
   trainSize: number;
   validationSize: number;
+  /** Rows removed at this fold's boundary because they fell inside the embargo. */
+  embargoedSamples: number;
+  trainingCutoffAt: string | null;
+  validationFrom: string | null;
+  validationTo: string | null;
   metrics: EvaluationMetrics;
   probabilityRange: { min: number; max: number } | null;
 }
 
 /**
- * Expanding-window walk-forward evaluation. Each fold trains only on data that
- * precedes its validation block.
+ * Expanding-window walk-forward evaluation.
+ *
+ * For fold `f` the model is fitted on rows that END at `validationStart` and
+ * the block `[validationStart, validationEnd)` is scored — but only after rows
+ * lying inside the embargo (one full prediction horizon) after the last
+ * training row are removed. The training slice is passed to `train` unchanged,
+ * so `trainSize` is exactly what the model saw.
  */
 export function walkForward(
   samples: TrainingSample[],
@@ -260,28 +311,30 @@ export function walkForward(
     folds?: number;
     minTrainSize?: number;
     embargoSeconds?: number;
+    /** Minimum scored rows for a fold to be usable (default 5). */
+    minValidationSize?: number;
     train: (trainSamples: TrainingSample[], validationSamples: TrainingSample[]) => { predict: (features: number[]) => number };
   },
 ): WalkForwardFold[] {
-  const folds = options.folds ?? 4;
-  const minTrainSize = options.minTrainSize ?? 60;
-  const embargo = options.embargoSeconds ?? 60;
+  const folds = Math.max(1, options.folds ?? 4);
+  const minTrainSize = Math.max(2, options.minTrainSize ?? 60);
+  const embargo = Math.max(0, options.embargoSeconds ?? 60);
+  const minValidationSize = Math.max(1, options.minValidationSize ?? 5);
   const ordered = [...samples].sort((a, b) => new Date(a.decidedAt).getTime() - new Date(b.decidedAt).getTime());
   const n = ordered.length;
   const results: WalkForwardFold[] = [];
-  if (n < minTrainSize + 10) return results;
+  if (n < minTrainSize + minValidationSize) return results;
 
-  const validationSize = Math.max(10, Math.floor((n - minTrainSize) / folds));
+  const validationSize = Math.max(minValidationSize, Math.floor((n - minTrainSize) / folds));
   for (let f = 0; f < folds; f += 1) {
     const validationStart = minTrainSize + f * validationSize;
     const validationEnd = Math.min(n, validationStart + validationSize);
     if (validationStart >= n) break;
     const trainSlice = ordered.slice(0, validationStart);
     const cutoff = new Date(trainSlice[trainSlice.length - 1]!.decidedAt).getTime();
-    const validationSlice = ordered
-      .slice(validationStart, validationEnd)
-      .filter((s) => new Date(s.decidedAt).getTime() >= cutoff + embargo * 1000);
-    if (validationSlice.length < 5) continue;
+    const blockSlice = ordered.slice(validationStart, validationEnd);
+    const validationSlice = blockSlice.filter((s) => new Date(s.decidedAt).getTime() >= cutoff + embargo * 1000);
+    if (validationSlice.length < minValidationSize) continue;
     const model = options.train(trainSlice, validationSlice);
     const probabilities = validationSlice.map((s) => model.predict(s.features));
     const labels = validationSlice.map((s) => s.label);
@@ -289,6 +342,10 @@ export function walkForward(
       fold: f + 1,
       trainSize: trainSlice.length,
       validationSize: validationSlice.length,
+      embargoedSamples: blockSlice.length - validationSlice.length,
+      trainingCutoffAt: trainSlice[trainSlice.length - 1]?.decidedAt ?? null,
+      validationFrom: validationSlice[0]?.decidedAt ?? null,
+      validationTo: validationSlice[validationSlice.length - 1]?.decidedAt ?? null,
       metrics: evaluate(labels, probabilities),
       probabilityRange:
         probabilities.length === 0
@@ -439,9 +496,16 @@ export function trainLogistic(samples: TrainingSample[], options: TrainOptions):
 
 export interface PromotionCriteria {
   minSamples: number;
+  /**
+   * Minimum number of OUT-OF-SAMPLE rows behind the reported metrics. Without
+   * this gate a candidate could be promoted on a handful of holdout rows.
+   */
+  minEvaluationSamples: number;
   minAccuracy: number;
   minAuc: number;
   maxLogLossRegression: number;
+  /** Maximum expected calibration error allowed on the holdout. */
+  maxExpectedCalibrationError: number;
   /** Minimum absolute log-loss improvement required over the champion. */
   minLogLossImprovement: number;
   /** Minimum walk-forward folds that must all exceed the accuracy floor. */
@@ -450,9 +514,11 @@ export interface PromotionCriteria {
 
 export const DEFAULT_PROMOTION_CRITERIA: PromotionCriteria = {
   minSamples: 200,
+  minEvaluationSamples: 40,
   minAccuracy: 0.55,
   minAuc: 0.55,
   maxLogLossRegression: 0.02,
+  maxExpectedCalibrationError: 0.15,
   minLogLossImprovement: 0,
   minWalkForwardFolds: 3,
 };
@@ -474,6 +540,11 @@ export function decidePromotion(params: {
   const add = (name: string, passed: boolean, detail: string) => checks.push({ name, passed, detail });
 
   add('sample_size', trainedSamples >= criteria.minSamples, `${trainedSamples} labelled samples (min ${criteria.minSamples})`);
+  add(
+    'evaluation_size',
+    metrics.samples >= criteria.minEvaluationSamples,
+    `${metrics.samples} out-of-sample rows (min ${criteria.minEvaluationSamples})`,
+  );
   add('accuracy', metrics.accuracy >= criteria.minAccuracy, `accuracy ${metrics.accuracy.toFixed(3)} (min ${criteria.minAccuracy})`);
   add('auc', (metrics.auc ?? 0) >= criteria.minAuc, `AUC ${(metrics.auc ?? 0).toFixed(3)} (min ${criteria.minAuc})`);
   add(
@@ -483,8 +554,8 @@ export function decidePromotion(params: {
   );
   add(
     'calibration',
-    metrics.ece <= 0.15,
-    `expected calibration error ${metrics.ece.toFixed(3)} (max 0.15)`,
+    metrics.ece <= criteria.maxExpectedCalibrationError,
+    `expected calibration error ${metrics.ece.toFixed(3)} (max ${criteria.maxExpectedCalibrationError})`,
   );
   const stableFolds = folds.filter((f) => f.metrics.samples >= 5 && f.metrics.accuracy >= criteria.minAccuracy);
   add(
@@ -587,6 +658,46 @@ export function learnStrategyWeights(
     if (!applied) skipped.push(strategy);
   }
   return { weights, evidence, skipped, version: `${LEARNING_VERSION}#weights` };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Retraining guards                                                          */
+/* ------------------------------------------------------------------------- */
+
+export interface PreviousLearningRun {
+  status: string;
+  datasetChecksum: string | null;
+  datasetSize: number | null;
+}
+
+/**
+ * Decide whether a learning run has anything new to learn.
+ *
+ * A dataset whose checksum (and size) matches an already SUCCEEDED run is
+ * byte-identical, so retraining would burn CPU to reproduce the same
+ * candidate. Failed/skipped runs are ignored: they must be retryable.
+ */
+export function shouldRetrain(params: {
+  datasetChecksum: string;
+  datasetSize: number;
+  previousRuns: PreviousLearningRun[];
+  force?: boolean;
+}): { retrain: boolean; reason: string } {
+  if (params.force) return { retrain: true, reason: 'forced by the operator' };
+  if (params.datasetChecksum.length === 0) return { retrain: true, reason: 'dataset checksum unavailable' };
+  const match = params.previousRuns.find(
+    (run) =>
+      run.status === 'SUCCEEDED' &&
+      run.datasetChecksum === params.datasetChecksum &&
+      (run.datasetSize === null || run.datasetSize === params.datasetSize),
+  );
+  if (match) {
+    return {
+      retrain: false,
+      reason: `dataset ${params.datasetChecksum.slice(0, 12)}… (${params.datasetSize} samples) was already trained successfully — nothing has changed since`,
+    };
+  }
+  return { retrain: true, reason: 'dataset differs from every previous successful run' };
 }
 
 /** Sanity checks that must pass before a dataset is allowed near training. */

@@ -143,7 +143,9 @@ export interface FreshnessReport {
   ageSeconds: number;
   isStale: boolean;
   isGappy: boolean;
-  quality: 'OK' | 'STALE' | 'GAPPY' | 'INSUFFICIENT';
+  /** True when the newest candle is dated in the future relative to `now`. */
+  futureData: boolean;
+  quality: 'OK' | 'STALE' | 'GAPPY' | 'INSUFFICIENT' | 'FUTURE_DATA';
   expectedOpenTime: string;
   reasons: string[];
 }
@@ -172,6 +174,7 @@ export function freshness(
       ageSeconds: Number.POSITIVE_INFINITY,
       isStale: true,
       isGappy: false,
+      futureData: false,
       quality: 'INSUFFICIENT',
       expectedOpenTime: toIso(expectedOpen),
       reasons: [`only ${candles.length} ${timeframe} candles available (need ${minCandles})`],
@@ -182,6 +185,12 @@ export function freshness(
   const ageSeconds = Math.max(0, diffSeconds(nowMs, candleCloseMs));
   const isStale = ageSeconds > maxAgeSeconds;
   if (isStale) reasons.push(`newest ${timeframe} candle closed ${Math.round(ageSeconds)}s ago (limit ${maxAgeSeconds}s)`);
+
+  // A candle whose close time lies in the future cannot be a real, completed
+  // bar — it is either clock skew or a provider leaking the in-progress bar.
+  // Treat it as unusable so no signal is built on unverifiable prices.
+  const futureData = candleCloseMs > nowMs + 5_000;
+  if (futureData) reasons.push(`newest ${timeframe} candle closes in the future (${Math.round((candleCloseMs - nowMs) / 1000)}s ahead of now)`);
 
   const recent = candles.slice(-20);
   let gappy = false;
@@ -195,13 +204,15 @@ export function freshness(
   if (gappy) reasons.push('missing candle(s) inside the recent window');
 
   let quality: FreshnessReport['quality'] = 'OK';
-  if (isStale) quality = 'STALE';
+  if (futureData) quality = 'FUTURE_DATA';
+  else if (isStale) quality = 'STALE';
   else if (gappy) quality = 'GAPPY';
 
   return {
     ageSeconds,
     isStale,
     isGappy: gappy,
+    futureData,
     quality,
     expectedOpenTime: toIso(expectedOpen),
     reasons,
