@@ -41,12 +41,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build:web
+      - name: Build the dashboard the way the Pages workflow does
+        run: npm run build:web
+        env:
+          # RFC 2606 reserved TLD: can never resolve, so this is a fixture and
+          # not an invented production URL. The real value is the repository
+          # variable VITE_RELAY_URL, supplied by the Pages workflow only.
+          VITE_RELAY_URL: https://relay.invalid
       - name: Verify the bundle contains no secrets and no loopback API base
         run: npm run guard:bundle
+      - name: Verify the bundle points at the relay it was built for
+        run: node scripts/assert-relay-base.mjs https://relay.invalid
       - uses: actions/upload-artifact@v4
         with:
-          name: vortex-web
+          # Named to make clear this is a build check, not a deployable site:
+          # it carries the reserved-TLD fixture relay, never a real origin.
+          name: vortex-web-ci-check
           path: apps/web/dist
           retention-days: 7
       - name: Fail if the deployed migrations drift from the source migrations

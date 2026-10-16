@@ -8,13 +8,24 @@
  */
 
 import { isMarketOpen, planNextSlot, toIso } from '@vortex/core';
-import { upsertHeartbeat, type SqlClient } from '@vortex/db';
+import { acquireLock, releaseLock, upsertHeartbeat, type SqlClient } from '@vortex/db';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runActivationJob, runSignalJob, enabledPairs } from './jobs/signals.js';
 import { runSettlementJob } from './jobs/settle.js';
 import { runMaintenanceJob } from './jobs/maintenance.js';
 import { runLearningJob } from './jobs/learning.js';
+
+/**
+ * Name of the singleton scheduler lease.
+ *
+ * Job slots already stop a cycle from running twice, but a second scheduler
+ * still burns provider quota and fights for every slot. The lease makes
+ * "exactly one active scheduler" an explicit, verifiable property: a standby
+ * instance keeps its process alive, reports itself as standby in the logs and
+ * writes no heartbeat, so the dashboard never shows a phantom worker.
+ */
+const SCHEDULER_LOCK = 'vortex-scheduler';
 
 export interface TickResult {
   ran: string[];
@@ -39,7 +50,11 @@ export class WorkerScheduler {
   private lastHeartbeatAt = 0;
   private lastLearningDay: string | null = null;
   private running = false;
+  private leaseHeld = false;
+  private lastLeaseCheckAt = 0;
   private readonly options: Required<SchedulerOptions>;
+  /** Lease time-to-live: long enough to survive a few missed heartbeats. */
+  private readonly leaseTtlSeconds: number;
 
   constructor(
     private readonly runtime: WorkerRuntime,
@@ -53,12 +68,18 @@ export class WorkerScheduler {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? Math.max(5_000, runtime.config.heartbeatSeconds * 1000),
       learningHourUtc: options.learningHourUtc ?? 3,
     };
+    // Ten heartbeat intervals of margin: a lease is only ever at risk if this
+    // process is already unable to talk to the database.
+    this.leaseTtlSeconds = Math.max(60, runtime.config.heartbeatSeconds * 10);
   }
 
   start(): void {
     if (this.timer) return;
     this.runtime.logger.info('scheduler starting', {
       component: 'scheduler',
+      workerId: this.runtime.config.workerId,
+      lease: SCHEDULER_LOCK,
+      leaseTtlSeconds: this.leaseTtlSeconds,
       tickMs: this.options.tickIntervalMs,
       cadenceMinutes: this.runtime.config.scanCadenceMinutes,
       publishLeadSeconds: this.runtime.config.publishLeadSeconds,
@@ -90,6 +111,63 @@ export class WorkerScheduler {
     for (let i = 0; i < 40 && this.running; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    // Hand the lease back so a replacement instance can take over immediately
+    // instead of waiting for the TTL to expire.
+    if (this.leaseHeld) {
+      await releaseLock(this.runtime.db.client as SqlClient, SCHEDULER_LOCK, this.runtime.config.workerId)
+        .catch(() => undefined);
+      this.leaseHeld = false;
+    }
+  }
+
+  /** True when this process currently owns the singleton scheduler lease. */
+  get holdsLease(): boolean {
+    return this.leaseHeld;
+  }
+
+  /**
+   * Take or renew the scheduler lease.
+   *
+   * Re-checked on the heartbeat cadence rather than every tick, because the
+   * lease outlives many ticks. A process that cannot take the lease stays up as
+   * a standby: it schedules nothing, claims nothing and writes no heartbeat.
+   */
+  private async ensureLease(now: Date): Promise<boolean> {
+    if (!this.runtime.db.connected || !this.runtime.db.client) return false;
+    const nowMs = now.getTime();
+    const recheckAfterMs = Math.max(5_000, this.options.heartbeatIntervalMs);
+    if (nowMs - this.lastLeaseCheckAt < recheckAfterMs) return this.leaseHeld;
+    this.lastLeaseCheckAt = nowMs;
+    const wasHeld = this.leaseHeld;
+    try {
+      this.leaseHeld = await acquireLock(this.runtime.db.client as SqlClient, {
+        name: SCHEDULER_LOCK,
+        owner: this.runtime.config.workerId,
+        ttlSeconds: this.leaseTtlSeconds,
+      });
+    } catch (error) {
+      this.leaseHeld = false;
+      this.runtime.logger.warn('scheduler lease check failed — standing by', {
+        component: 'scheduler',
+        error: (error as Error).message,
+      });
+      return false;
+    }
+    if (this.leaseHeld && !wasHeld) {
+      this.runtime.logger.info('scheduler lease acquired', {
+        component: 'scheduler',
+        lease: SCHEDULER_LOCK,
+        workerId: this.runtime.config.workerId,
+        ttlSeconds: this.leaseTtlSeconds,
+      });
+    } else if (!this.leaseHeld && wasHeld) {
+      this.runtime.logger.warn('scheduler lease lost — standing by', {
+        component: 'scheduler',
+        lease: SCHEDULER_LOCK,
+        workerId: this.runtime.config.workerId,
+      });
+    }
+    return this.leaseHeld;
   }
 
   /**
@@ -101,6 +179,13 @@ export class WorkerScheduler {
     this.running = true;
     const result: TickResult = { ran: [], skipped: [], notes: [] };
     try {
+      // The lease is checked before anything else: a standby instance must not
+      // publish a heartbeat either, or the dashboard would report a worker that
+      // is not actually doing any work.
+      if (!(await this.ensureLease(now))) {
+        result.skipped.push('scheduler lease held by another instance — this process is standby');
+        return result;
+      }
       await this.heartbeat(now, result);
       if (!this.runtime.db.connected) {
         result.skipped.push('database disconnected — only heartbeats attempted');

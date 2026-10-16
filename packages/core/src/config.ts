@@ -85,6 +85,18 @@ export const configSchema = z.object({
   promotionMinAuc: numLike(0.55),
   promotionMaxLogLossRegression: numLike(0.02),
 
+  /**
+   * Process role inside a deployment.
+   *
+   *   `all`    — relay and scheduler in one process (default: local development)
+   *   `relay`  — HTTP surface only, never schedules work
+   *   `worker` — scheduler only, never binds a port
+   *
+   * Production deployments run the last two as two services so the public
+   * surface can be restarted without interrupting ingestion.
+   */
+  role: z.enum(['all', 'relay', 'worker']).default('all'),
+
   workerId: z.string().default(''),
   heartbeatSeconds: intLike(30),
   heartbeatStaleSeconds: intLike(120),
@@ -164,6 +176,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     promotionMinAuc: env.VORTEX_MODEL_PROMOTION_MIN_AUC,
     promotionMaxLogLossRegression: env.VORTEX_MODEL_MAX_LOG_LOSS_REGRESSION,
 
+    role: env.VORTEX_ROLE,
     workerId: env.VORTEX_WORKER_ID,
     heartbeatSeconds: env.VORTEX_HEARTBEAT_SECONDS,
     heartbeatStaleSeconds: env.VORTEX_HEARTBEAT_STALE_SECONDS,
@@ -247,6 +260,15 @@ export function validateConfig(cfg: VortexConfig): ConfigIssue[] {
     'warning',
   );
   need(cfg.pairs.length > 0, 'VORTEX_PAIRS', 'At least one currency pair must be enabled.');
+  if (cfg.nodeEnv === 'production' && cfg.role === 'all') {
+    issues.push({
+      key: 'VORTEX_ROLE',
+      severity: 'warning',
+      message:
+        'Role "all" runs the relay and the scheduler in one process. Production deployments should run ' +
+        'two services: VORTEX_ROLE=relay (public API) and VORTEX_ROLE=worker (ingestion, signals, settlement, training).',
+    });
+  }
   need(
     cfg.telegramEnabled ? cfg.telegramBotToken.length > 0 : true,
     'TELEGRAM_BOT_TOKEN',
@@ -263,6 +285,7 @@ export function validateConfig(cfg: VortexConfig): ConfigIssue[] {
 /** Non-secret configuration that is safe to send to the browser. */
 export interface PublicRuntimeConfig {
   engineVersion: string;
+  role: 'all' | 'relay' | 'worker';
   pairs: Pair[];
   scanCadenceMinutes: number;
   publishLeadSeconds: number;
@@ -282,6 +305,7 @@ export interface PublicRuntimeConfig {
 export function publicRuntimeConfig(cfg: VortexConfig): PublicRuntimeConfig {
   return {
     engineVersion: cfg.engineVersion,
+    role: cfg.role,
     pairs: cfg.pairs,
     scanCadenceMinutes: cfg.scanCadenceMinutes,
     publishLeadSeconds: cfg.publishLeadSeconds,
