@@ -128,11 +128,23 @@ describe('quota selection', () => {
 });
 
 describe('failure classification', () => {
-  it('cools a key down on HTTP 429', () => {
+  it('marks quota exhaustion on HTTP 429 so fallback uses another key', () => {
     const result = classifyProviderError(429, 'You have run out of API credits for the current minute');
-    expect(result.status).toBe('COOLDOWN');
+    expect(result.status).toBe('EXHAUSTED');
     expect(result.rotate).toBe(true);
     expect(result.retry).toBe(false);
+  });
+
+  it('rotates on a recognizable quota exhaustion response even when provider status is 400', () => {
+    const result = classifyProviderError(400, 'You have run out of API credits for today');
+    expect(result.status).toBe('EXHAUSTED');
+    expect(result.rotate).toBe(true);
+    expect(result.retry).toBe(false);
+  });
+
+  it('does not rotate an unrelated bad request', () => {
+    const result = classifyProviderError(400, 'invalid outputsize parameter');
+    expect(result.rotate).toBe(false);
   });
 
   it('marks a key invalid on auth failures and never retries it', () => {

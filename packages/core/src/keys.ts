@@ -239,9 +239,9 @@ export function classifyProviderError(status: number, body: string): ProviderErr
     text.includes('daily limit') ||
     text.includes('quota');
   const rateLike = text.includes('rate limit') || text.includes('too many requests');
-  if (status === 429) {
+  if (status === 429 || quotaLike) {
     return {
-      status: 'COOLDOWN',
+      status: quotaLike ? 'EXHAUSTED' : 'COOLDOWN',
       retry: false,
       rotate: true,
       reason: quotaLike ? 'provider reported exhausted API credits' : 'provider rate limit reached',

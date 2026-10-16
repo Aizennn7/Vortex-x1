@@ -7,9 +7,8 @@
  *      overlapping GitHub Actions runs can never execute concurrently.
  *   2. Recovers any orphaned `RUNNING` rows in `job_runs` / `learning_runs` left
  *      behind by a prior crashed or timed-out run.
- *   3. Idempotently registers a single `TWELVEDATA_API_KEY` (when supplied in
- *      server secrets) into `provider_keys` encrypted with `VORTEX_SECRET_KEY`
- *      — never rotating multiple keys to bypass Twelve Data limits.
+ *   3. Idempotently registers up to four server-side Twelve Data keys, encrypted
+ *      with `VORTEX_SECRET_KEY`; the key pool applies bounded, classified fallback.
  *   4. Executes the requested pipeline stages (`ingest`, `activate`, `settle`,
  *      `signals`, `learning`, `maintenance`) with bounded retries and failed-slot
  *      recovery.
@@ -48,7 +47,7 @@ export type JobMode = (typeof JOB_MODES)[number];
 type PipelineStep = 'ingest' | 'activate' | 'settle' | 'signals' | 'learning' | 'maintenance';
 
 const SCHEDULER_LOCK = 'vortex-scheduler';
-const PRIMARY_ENV_KEY_LABEL = 'twelvedata-primary';
+const ENV_KEY_LABELS = ['twelvedata-primary', 'twelvedata-secondary', 'twelvedata-tertiary', 'twelvedata-quaternary'] as const;
 
 export interface OneShotOptions {
   modes?: JobMode[];
@@ -153,62 +152,60 @@ export function expandSteps(modes: JobMode[]): PipelineStep[] {
 }
 
 /**
- * Idempotently register `TWELVEDATA_API_KEY` into `provider_keys` (encrypted
- * with `VORTEX_SECRET_KEY`). Only a single primary key is supported here so
- * free-tier limits are respected and never bypassed through key rotation.
+ * Idempotently register configured server-side Twelve Data keys. Secrets stay
+ * encrypted at rest; rotation/fallback is bounded by KeyPool and provider error
+ * classification. Keys are not assumed to be separate provider accounts.
  */
 export async function ensureProviderKeyFromEnv(runtime: WorkerRuntime): Promise<OneShotSummary['keyBootstrap']> {
-  const apiKey = runtime.config.providerApiKey.trim();
+  const values = [
+    runtime.config.providerApiKey,
+    process.env.TWELVEDATA_API_KEY_2 ?? '',
+    process.env.TWELVEDATA_API_KEY_3 ?? '',
+    process.env.TWELVEDATA_API_KEY_4 ?? '',
+  ].map((key) => key.trim());
   const secretKey = runtime.config.secretKey.trim();
-  if (apiKey.length < 16 || secretKey.length === 0 || !runtime.db.connected) {
-    return { configured: false, action: 'none' };
-  }
+  if (!secretKey || !runtime.db.connected) return { configured: false, action: 'none' };
 
-  const db = runtime.db.client;
-  const fp = keyFingerprint(apiKey);
-  const masked = maskKey(apiKey);
-  const existingKeys = await listKeys(db);
-
-  const matchByFp = existingKeys.find((k) => k.fingerprint === fp);
-  if (matchByFp) {
-    if (!matchByFp.enabled) {
-      await updateKey(db, matchByFp.id, { enabled: true, status: 'ACTIVE' });
-      runtime.keyPool.invalidate();
-      runtime.invalidateKeyCache();
-      return { configured: true, action: 'updated', maskedKey: masked };
+  let action: OneShotSummary['keyBootstrap']['action'] = 'none';
+  let configured = false;
+  for (const [index, apiKey] of values.entries()) {
+    if (apiKey.length < 16) continue;
+    configured = true;
+    const label = ENV_KEY_LABELS[index]!;
+    const fp = keyFingerprint(apiKey);
+    const masked = maskKey(apiKey);
+    const existingKeys = await listKeys(runtime.db.client);
+    const matchByFp = existingKeys.find((k) => k.fingerprint === fp);
+    if (matchByFp) {
+      if (!matchByFp.enabled) {
+        await updateKey(runtime.db.client, matchByFp.id, { enabled: true, status: 'ACTIVE' });
+        action = action === 'none' ? 'updated' : action;
+      } else if (action === 'none') action = 'already_present';
+      continue;
     }
-    return { configured: true, action: 'already_present', maskedKey: masked };
-  }
 
-  const ciphertext = encryptSecret(apiKey, secretKey);
-  const matchByLabel = existingKeys.find((k) => k.label === PRIMARY_ENV_KEY_LABEL);
-  if (matchByLabel) {
-    await updateKey(db, matchByLabel.id, {
-      ciphertext,
-      maskedKey: masked,
-      fingerprint: fp,
-      enabled: true,
-      status: 'ACTIVE',
-      minuteLimit: runtime.config.providerRpmPerKey,
-      dayLimit: runtime.config.providerRpdPerKey,
-    });
+    const ciphertext = encryptSecret(apiKey, secretKey);
+    const matchByLabel = existingKeys.find((k) => k.label === label);
+    if (matchByLabel) {
+      await updateKey(runtime.db.client, matchByLabel.id, {
+        ciphertext, maskedKey: masked, fingerprint: fp, enabled: true, status: 'ACTIVE',
+        minuteLimit: runtime.config.providerRpmPerKey, dayLimit: runtime.config.providerRpdPerKey,
+      });
+      action = 'updated';
+    } else {
+      await insertKey(runtime.db.client, {
+        label, maskedKey: masked, ciphertext, fingerprint: fp,
+        minuteLimit: runtime.config.providerRpmPerKey, dayLimit: runtime.config.providerRpdPerKey,
+        headroomPercent: runtime.config.providerHeadroomPercent,
+      });
+      action = action === 'none' || action === 'already_present' ? 'inserted' : action;
+    }
+  }
+  if (action === 'inserted' || action === 'updated') {
     runtime.keyPool.invalidate();
     runtime.invalidateKeyCache();
-    return { configured: true, action: 'updated', maskedKey: masked };
   }
-
-  await insertKey(db, {
-    label: PRIMARY_ENV_KEY_LABEL,
-    maskedKey: masked,
-    ciphertext,
-    fingerprint: fp,
-    minuteLimit: runtime.config.providerRpmPerKey,
-    dayLimit: runtime.config.providerRpdPerKey,
-    headroomPercent: runtime.config.providerHeadroomPercent,
-  });
-  runtime.keyPool.invalidate();
-  runtime.invalidateKeyCache();
-  return { configured: true, action: 'inserted', maskedKey: masked };
+  return { configured, action };
 }
 
 function summarizeJobRun(job: JobRun | null): OneShotSummary['lastSuccessfulJob'] {
