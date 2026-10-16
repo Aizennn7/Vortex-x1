@@ -39,12 +39,23 @@ if (textFiles.length === 0) {
   process.exit(1);
 }
 
+function isPublicSupabaseAnonJwt(token) {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts[1]) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return payload && typeof payload === 'object' && payload.role === 'anon';
+  } catch {
+    return false;
+  }
+}
+
 const patterns = [
   { name: '12-data provider key', re: /\b[0-9a-f]{32}\b/ },
   { name: 'Telegram bot token', re: /\b\d{8,12}:[A-Za-z0-9_-]{30,40}\b/ },
   { name: 'Postgres connection string', re: /postgres(?:ql)?:\/\/[^\s"'`]+/i },
-  { name: 'Supabase service key', re: /\bservice_role\b/ },
-  { name: 'JWT-shaped token', re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/ },
+  { name: 'Supabase service key', re: /\b(service_role|sb_secret_[A-Za-z0-9_-]+)\b/ },
+  { name: 'JWT-shaped token', re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { name: 'hard-coded admin bearer token', re: /Bearer\s+[A-Za-z0-9._~+/=-]{16,}/ },
   { name: 'environment dumps', re: /\bprocess\.env\.[A-Z_]+\b/ },
 ];
@@ -53,6 +64,15 @@ const failures = [];
 for (const file of textFiles) {
   const content = readFileSync(file, 'utf8');
   for (const { name, re } of patterns) {
+    if (name === 'JWT-shaped token') {
+      const matches = content.match(re) ?? [];
+      for (const jwt of matches) {
+        if (!isPublicSupabaseAnonJwt(jwt)) {
+          failures.push(`${file.replace(root + '/', '')}: ${name} → ${jwt.slice(0, 60)}`);
+        }
+      }
+      continue;
+    }
     const match = content.match(re);
     if (!match) continue;
     // `vite/client` injects a harmless `import.meta.env` guard; only real

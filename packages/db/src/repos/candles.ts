@@ -194,6 +194,8 @@ export interface QualityUpdate {
   lastCandleAt: string | null;
   expectedAt: string | null;
   detail: string;
+  checkedAt?: string | null;
+  stale?: boolean;
 }
 
 export async function upsertQuality(client: SqlClient, updates: QualityUpdate[]): Promise<void> {
@@ -236,8 +238,9 @@ export async function listQuality(client: SqlClient): Promise<QualityUpdate[]> {
     last_candle_at: string | Date | null;
     expected_at: string | Date | null;
     detail: string | null;
+    checked_at: string | Date | null;
   }>(
-    `select pair, timeframe, status, age_seconds, gap_count, last_candle_at, expected_at, detail
+    `select pair, timeframe, status, age_seconds, gap_count, last_candle_at, expected_at, detail, checked_at
        from market_data_quality order by pair, timeframe`,
   );
   return rows.rows.map((r) => ({
@@ -249,6 +252,7 @@ export async function listQuality(client: SqlClient): Promise<QualityUpdate[]> {
     lastCandleAt: iso(r.last_candle_at),
     expectedAt: iso(r.expected_at),
     detail: r.detail ?? '',
+    checkedAt: iso(r.checked_at),
   }));
 }
 

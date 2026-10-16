@@ -6,7 +6,7 @@
  */
 
 import { z } from 'zod';
-import { DEFAULT_PAIRS, normalizePair } from './instruments.js';
+import { FREE_TIER_DEFAULT_PAIRS, normalizePair } from './instruments.js';
 import type { Pair } from './types.js';
 
 const boolish = z
@@ -45,13 +45,15 @@ export const configSchema = z.object({
 
   provider: z.enum(['twelvedata', 'simulated']).default('twelvedata'),
   providerBaseUrl: z.string().default('https://api.twelvedata.com'),
+  /** Optional server-side primary Twelve Data API key (encrypted into provider_keys at job start). */
+  providerApiKey: z.string().default(''),
   providerRpmPerKey: intLike(8),
   providerRpdPerKey: intLike(800),
   providerHeadroomPercent: numLike(15),
   providerTimeoutMs: intLike(12_000),
   providerMaxAttempts: intLike(3),
 
-  pairs: z.array(z.string()).default(DEFAULT_PAIRS),
+  pairs: z.array(z.string()).default(FREE_TIER_DEFAULT_PAIRS),
   scanCadenceMinutes: intLike(5),
   publishLeadSeconds: intLike(60),
   signalHorizonSeconds: intLike(60),
@@ -143,6 +145,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
 
     provider: env.VORTEX_PROVIDER,
     providerBaseUrl: env.VORTEX_PROVIDER_BASE_URL,
+    providerApiKey: env.TWELVEDATA_API_KEY,
     providerRpmPerKey: env.VORTEX_PROVIDER_RPM_PER_KEY,
     providerRpdPerKey: env.VORTEX_PROVIDER_RPD_PER_KEY,
     providerHeadroomPercent: env.VORTEX_PROVIDER_HEADROOM_PERCENT,
@@ -241,6 +244,7 @@ export function validateConfig(cfg: VortexConfig): ConfigIssue[] {
       cfg.adminToken.length >= 24,
       'VORTEX_ADMIN_TOKEN',
       'Admin token must be set (>= 24 chars) to protect privileged relay routes.',
+      cfg.role === 'worker' ? 'warning' : 'error',
     );
     need(
       cfg.secretKey.length > 0,
@@ -251,6 +255,14 @@ export function validateConfig(cfg: VortexConfig): ConfigIssue[] {
 
   need(cfg.providerRpmPerKey > 0, 'VORTEX_PROVIDER_RPM_PER_KEY', 'Provider requests/minute per key must be > 0.');
   need(cfg.providerRpdPerKey >= cfg.providerRpmPerKey, 'VORTEX_PROVIDER_RPD_PER_KEY', 'Daily plan limit must exceed the per-minute limit.');
+  const usableDailyCredits = Math.floor(cfg.providerRpdPerKey * (1 - cfg.providerHeadroomPercent / 100));
+  const estimatedDailyCredits = Math.ceil((24 * 60) / Math.max(1, cfg.scanCadenceMinutes)) * cfg.pairs.length;
+  need(
+    estimatedDailyCredits <= usableDailyCredits,
+    'VORTEX_PAIRS',
+    `Configured pairs (${cfg.pairs.length}) require ~${estimatedDailyCredits} credits/day at ${cfg.scanCadenceMinutes}m cadence, exceeding single-key usable budget (${usableDailyCredits}/day). Ingestion will throttle and rotate pairs as budget allows.`,
+    'warning',
+  );
   need(cfg.minConfidence > 0 && cfg.minConfidence < 1, 'VORTEX_MIN_CONFIDENCE', 'Minimum confidence must be between 0 and 1.');
   need(cfg.publishLeadSeconds > 0, 'VORTEX_PUBLISH_LEAD_SECONDS', 'Publish lead must be positive.');
   need(
@@ -349,9 +361,14 @@ export function assertNoSecrets(payload: unknown, secrets: string[]): void {
 }
 
 export function secretValues(cfg: VortexConfig): string[] {
-  return [cfg.adminToken, cfg.secretKey, cfg.telegramBotToken, cfg.databaseUrl, cfg.databaseUrlDirect].filter(
-    (v): v is string => typeof v === 'string' && v.length >= 8,
-  );
+  return [
+    cfg.adminToken,
+    cfg.secretKey,
+    cfg.telegramBotToken,
+    cfg.providerApiKey,
+    cfg.databaseUrl,
+    cfg.databaseUrlDirect,
+  ].filter((v): v is string => typeof v === 'string' && v.length >= 8);
 }
 
 export { SECRET_PATTERNS };

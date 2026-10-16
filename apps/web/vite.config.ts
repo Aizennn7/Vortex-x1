@@ -22,8 +22,32 @@ export default defineConfig(({ mode }) => {
   // environment when they are read through loadEnv's file system; mirror the
   // ones we depend on explicitly so CI can supply them as plain env vars.
   const relayUrl = process.env.VITE_RELAY_URL ?? env.VITE_RELAY_URL ?? '';
+  const supabaseUrl = process.env.VITE_SUPABASE_URL ?? env.VITE_SUPABASE_URL ?? '';
+  const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY ?? env.VITE_SUPABASE_ANON_KEY ?? '';
+  const dataSource = process.env.VITE_DATA_SOURCE ?? env.VITE_DATA_SOURCE ?? '';
   const base = (process.env.VITE_BASE_PATH ?? env.VITE_BASE_PATH ?? './').trim() || './';
   const devRelay = env.VITE_DEV_RELAY ?? 'http://127.0.0.1:8787';
+
+  // Hard build-time guard: never allow a Supabase service_role or secret key
+  // to be passed as VITE_SUPABASE_ANON_KEY.
+  if (supabaseAnonKey) {
+    if (/service_role/i.test(supabaseAnonKey) || /^sb_secret_/i.test(supabaseAnonKey.trim())) {
+      throw new Error('Refusing to build: VITE_SUPABASE_ANON_KEY contains a privileged service_role / secret key.');
+    }
+    const jwtParts = supabaseAnonKey.trim().split('.');
+    if (jwtParts.length === 3 && jwtParts[1]) {
+      try {
+        const decoded = JSON.parse(Buffer.from(jwtParts[1], 'base64url').toString('utf8')) as { role?: string };
+        if (decoded.role && decoded.role !== 'anon') {
+          throw new Error(
+            `Refusing to build: VITE_SUPABASE_ANON_KEY JWT has role="${decoded.role}" (only role="anon" is permitted in browser code).`,
+          );
+        }
+      } catch (err) {
+        if ((err as Error).message.startsWith('Refusing to build')) throw err;
+      }
+    }
+  }
 
   return {
     base,
@@ -31,6 +55,9 @@ export default defineConfig(({ mode }) => {
       // Build-time constants: explicit `define` entries win over Vite's own
       // env replacement and keep the value visible in the bundle for auditing.
       'import.meta.env.VITE_RELAY_URL': JSON.stringify(relayUrl.replace(/\/+$/, '')),
+      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(supabaseUrl.replace(/\/+$/, '')),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(supabaseAnonKey.trim()),
+      'import.meta.env.VITE_DATA_SOURCE': JSON.stringify(dataSource.trim()),
       'import.meta.env.VITE_BASE_PATH': JSON.stringify(base),
     },
     plugins: [react()],

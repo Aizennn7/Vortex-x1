@@ -1,20 +1,23 @@
 /**
  * VORTEX SI status board.
  *
- * This is the first slice of the dashboard: an honest read-only view of what
- * the worker relay reports. It renders only measured facts and states plainly
- * when something is not configured, not reachable or not verified — no
- * placeholder numbers, no implied liveness, and no "live" claim for simulated
- * data.
- *
- * The planetary/animated control deck is the next milestone; this page is
- * deliberately small so the deployment path (static bundle → relay) is proven
- * first.
+ * This is the read-only operational dashboard: it renders only measured facts
+ * and states plainly when something is not configured, not reachable, stale,
+ * or idle between scheduled GitHub Actions runs — no placeholder numbers, no
+ * implied 24/7 liveness, and no "live" claim for simulated or stale data.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { RELAY_BASE, relay, type HealthPayload, type SignalRow, type SummaryPayload } from './relay.js';
+import {
+  DATA_SOURCE_MODE,
+  RELAY_BASE,
+  SUPABASE_URL,
+  relay,
+  type HealthPayload,
+  type SignalRow,
+  type SummaryPayload,
+} from './relay.js';
 import './styles.css';
 
 type Loadable<T> = { state: 'loading' } | { state: 'ready'; value: T } | { state: 'error'; message: string };
@@ -84,9 +87,19 @@ function Dashboard() {
 
   const signalsValue = summary.result.state === 'ready' ? summary.result.value.signals : null;
   const worker = summary.result.state === 'ready' ? summary.result.value.worker : null;
+  const lastJob = summary.result.state === 'ready' ? (summary.result.value.lastSuccessfulJob ?? null) : null;
+  const marketData = summary.result.state === 'ready' ? (summary.result.value.marketData ?? []) : [];
   const budget = summary.result.state === 'ready' ? summary.result.value.providerBudget : null;
   const telegram = summary.result.state === 'ready' ? summary.result.value.telegram : null;
   const alerts = summary.result.state === 'ready' ? summary.result.value.alerts : [];
+
+  const stalePairs = useMemo(
+    () =>
+      marketData
+        .filter((m) => m.stale === true || m.status === 'DEGRADED' || m.status === 'DISCONNECTED')
+        .map((m) => m.pair),
+    [marketData],
+  );
 
   const synthetic = health.result.state === 'ready' ? health.result.value.provider.synthetic : null;
   const banner = useMemo(() => {
@@ -97,10 +110,43 @@ function Dashboard() {
       };
     }
     if (health.result.state === 'ready' && !health.result.value.ready) {
-      return { tone: 'warn', text: `Relay answered but reports not ready: ${health.result.value.reasons.join('; ')}` };
+      return { tone: 'warn', text: `Data source answered but reports not ready: ${health.result.value.reasons.join('; ')}` };
+    }
+    if (stalePairs.length > 0) {
+      return {
+        tone: 'warn',
+        text: `Stale market data detected for ${stalePairs.join(', ')}. Signals are suppressed (NO-TRADE) when candle age exceeds the freshness threshold.`,
+      };
     }
     return null;
-  }, [synthetic, health.result]);
+  }, [synthetic, health.result, stalePairs]);
+
+  const sourceDescription =
+    DATA_SOURCE_MODE === 'supabase'
+      ? `supabase public views (${SUPABASE_URL})`
+      : DATA_SOURCE_MODE === 'snapshot'
+        ? 'static snapshot (./snapshot.json)'
+        : `relay (${RELAY_BASE || 'same origin'})`;
+
+  const workerBadge =
+    summary.result.state !== 'ready'
+      ? undefined
+      : worker?.liveness === 'CONNECTED' && worker.running !== false
+        ? 'CONNECTED'
+        : worker || lastJob
+          ? 'DISCONNECTED'
+          : 'NOT VERIFIED';
+
+  const marketDataBadge =
+    summary.result.state !== 'ready'
+      ? undefined
+      : marketData.length === 0
+        ? 'NOT VERIFIED'
+        : stalePairs.length > 0
+          ? 'DEGRADED'
+          : marketData.some((m) => m.status === 'CONNECTED')
+            ? 'CONNECTED'
+            : 'NOT VERIFIED';
 
   return (
     <main>
@@ -109,11 +155,12 @@ function Dashboard() {
           <h1>VORTEX SI</h1>
           <p className="muted">
             Read-only status board. Signals are informational; no orders are placed anywhere. Paper figures charge
-            spread and slippage and are not realised profit.
+            spread and slippage and are not realised profit. Free-tier scheduled jobs run on GitHub Actions (minimum
+            5-minute cron interval, subject to queue delays — not continuous 24/7 execution).
           </p>
         </div>
         <div className="masthead-meta">
-          <span className="muted">relay: {RELAY_BASE || 'same origin'}</span>
+          <span className="muted">source: {sourceDescription}</span>
           {health.refreshedAt ? <span className="muted">checked {new Date(health.refreshedAt).toLocaleTimeString()}</span> : null}
           <button type="button" onClick={() => { void health.refresh(); void summary.refresh(); void signals.refresh(); }}>
             Refresh
@@ -125,42 +172,91 @@ function Dashboard() {
 
       <div className="grid">
         <Card
-          title="Relay"
+          title="Data source"
           status={
             health.result.state === 'ready' ? (health.result.value.status === 'ok' ? 'CONNECTED' : 'DEGRADED') : undefined
           }
         >
           {health.result.state === 'loading' ? <Loading /> : null}
           {health.result.state === 'error' ? (
-            <Failure message={`${health.result.message}. Set VITE_RELAY_URL at build time or serve the dashboard behind the relay.`} />
+            <Failure
+              message={`${health.result.message}. Configure VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (recommended free-tier read views), VITE_DATA_SOURCE=snapshot, or VITE_RELAY_URL.`}
+            />
           ) : null}
           {health.result.state === 'ready' ? (
             <dl className="facts">
               <div><dt>service</dt><dd>{health.result.value.service}</dd></div>
               <div><dt>engine</dt><dd>{health.result.value.version}</dd></div>
-              <div><dt>uptime</dt><dd>{Math.floor(health.result.value.uptimeSeconds / 60)} min</dd></div>
+              <div><dt>mode</dt><dd>{DATA_SOURCE_MODE}</dd></div>
               <div><dt>database</dt><dd>{health.result.value.database.ok ? 'reachable' : health.result.value.database.detail}</dd></div>
               <div><dt>provider</dt><dd>{health.result.value.provider.name}{health.result.value.provider.synthetic ? ' (simulated)' : ''}</dd></div>
             </dl>
           ) : null}
         </Card>
 
-        <Card title="Worker" status={worker ? worker.liveness : summary.result.state === 'ready' ? 'NOT VERIFIED' : undefined}>
+        <Card title="Worker & jobs" status={workerBadge}>
           {summary.result.state === 'loading' ? <Loading /> : null}
           {summary.result.state === 'error' ? <Failure message={summary.result.message} /> : null}
           {summary.result.state === 'ready' ? (
-            worker ? (
+            worker || lastJob ? (
               <dl className="facts">
-                <div><dt>worker id</dt><dd>{worker.workerId}</dd></div>
-                <div><dt>last heartbeat</dt><dd>{worker.secondsSince}s ago</dd></div>
-                <div><dt>last job</dt><dd>{worker.lastJob ?? 'n/a'}</dd></div>
+                <div>
+                  <dt>worker state</dt>
+                  <dd>
+                    {worker?.liveness === 'CONNECTED' && worker.running !== false
+                      ? `running (${worker.workerId})`
+                      : 'stopped / idle between scheduled runs'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>last heartbeat</dt>
+                  <dd>{worker ? `${worker.secondsSince}s ago (${worker.workerId})` : 'none active'}</dd>
+                </div>
+                <div>
+                  <dt>last successful job</dt>
+                  <dd>
+                    {lastJob
+                      ? `${lastJob.jobName} (${lastJob.ageSeconds}s ago)`
+                      : worker?.lastJob ?? 'none recorded yet'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>last job finished</dt>
+                  <dd>{lastJob ? lastJob.finishedAt.replace('T', ' ').replace('.000Z', 'Z') : 'n/a'}</dd>
+                </div>
                 <div><dt>market</dt><dd>{summary.result.value.marketOpen ? 'open' : 'closed'}</dd></div>
               </dl>
             ) : (
               <p className="muted">
-                No heartbeat recorded yet. Liveness is only claimed from the heartbeat table — start{' '}
-                <code>npm run worker</code> and this panel will report it.
+                No worker heartbeat or completed job recorded yet. Trigger the GitHub Actions workflow or run{' '}
+                <code>npm run job:run</code> to execute a cycle.
               </p>
+            )
+          ) : null}
+        </Card>
+
+        <Card title="Market data" status={marketDataBadge}>
+          {summary.result.state === 'loading' ? <Loading /> : null}
+          {summary.result.state === 'error' ? <Failure message={summary.result.message} /> : null}
+          {summary.result.state === 'ready' ? (
+            marketData.length === 0 ? (
+              <p className="muted">No market data ingested yet.</p>
+            ) : (
+              <dl className="facts">
+                {marketData.map((row) => {
+                  const isStale = row.stale === true || row.status === 'DEGRADED' || row.status === 'DISCONNECTED';
+                  const ageLabel = row.ageSeconds === null ? 'no candles' : `${row.ageSeconds}s old`;
+                  return (
+                    <div key={row.pair}>
+                      <dt>{row.pair}</dt>
+                      <dd>
+                        {row.status} · {ageLabel}
+                        {isStale ? ' (STALE)' : ' (fresh)'}
+                      </dd>
+                    </div>
+                  );
+                })}
+              </dl>
             )
           ) : null}
         </Card>

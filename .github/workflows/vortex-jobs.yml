@@ -1,0 +1,98 @@
+name: Scheduled Pipeline Jobs
+
+# Free-tier backend execution on GitHub Actions.
+#
+# Replaces the paid 24/7 Render background worker with idempotent, lock-guarded
+# one-shot jobs against Supabase Free:
+#   - Recovers any stale RUNNING job slots from prior interrupted runs
+#   - Ingests M1 candles within Twelve Data Free quota reservations (8/min, 800/day)
+#   - Activates due signals and settles elapsed signals against stored candles
+#   - Evaluates enabled pairs and publishes qualifying signals to Telegram
+#   - Updates component health, monitors losses/streaks/quotas, and prunes old rows
+#   - Marks its worker heartbeat stopped on exit so the dashboard never pretends
+#     a stopped worker is running
+#
+# Scheduling note: GitHub Actions cron has a 5-minute minimum interval and may
+# experience queue delays during high platform load. It is not a continuous
+# 24/7 real-time daemon.
+on:
+  schedule:
+    # Monday–Friday UTC (FX market open hours)
+    - cron: '*/5 * * * 1-5'
+    # Sunday 22:00–23:55 UTC (Sydney FX session open)
+    - cron: '*/5 22-23 * * 0'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job mode to execute (cycle, ingest, settle, signals, maintenance, learning, all)'
+        required: false
+        default: 'cycle'
+        type: choice
+        options:
+          - cycle
+          - ingest
+          - settle
+          - signals
+          - maintenance
+          - learning
+          - all
+
+permissions:
+  contents: read
+
+# Never cancel an in-flight job: aborting mid-run could interrupt a database
+# transaction or leave a Telegram delivery unconfirmed. Overlapping runs are
+# safely serialized by this concurrency group AND the Postgres `vortex-scheduler`
+# lock in `job_locks`.
+concurrency:
+  group: vortex-scheduled-cycle
+  cancel-in-progress: false
+
+jobs:
+  run-cycle:
+    name: Run VORTEX SI cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NODE_ENV: production
+      VORTEX_ROLE: worker
+      VORTEX_WORKER_ID: gha-cycle-${{ github.run_id }}-${{ github.run_attempt }}
+      VORTEX_INSTANCE_LABEL: github-actions-cycle
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
+      VORTEX_ADMIN_TOKEN: ${{ secrets.VORTEX_ADMIN_TOKEN }}
+      TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_PRIMARY: ${{ secrets.TELEGRAM_CHANNEL_PRIMARY || vars.TELEGRAM_CHANNEL_PRIMARY }}
+      TELEGRAM_CHANNEL_SECONDARY: ${{ secrets.TELEGRAM_CHANNEL_SECONDARY || vars.TELEGRAM_CHANNEL_SECONDARY }}
+      VORTEX_TELEGRAM_ENABLED: ${{ vars.VORTEX_TELEGRAM_ENABLED || 'false' }}
+      VORTEX_ALLOW_SYNTHETIC_SIGNALS: 'false'
+      VORTEX_PROVIDER: ${{ vars.VORTEX_PROVIDER || 'twelvedata' }}
+      VORTEX_PAIRS: ${{ vars.VORTEX_PAIRS || 'EUR/USD,GBP/USD' }}
+      VORTEX_PROVIDER_RPM_PER_KEY: ${{ vars.VORTEX_PROVIDER_RPM_PER_KEY || '8' }}
+      VORTEX_PROVIDER_RPD_PER_KEY: ${{ vars.VORTEX_PROVIDER_RPD_PER_KEY || '800' }}
+      VORTEX_PROVIDER_HEADROOM_PERCENT: ${{ vars.VORTEX_PROVIDER_HEADROOM_PERCENT || '15' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Verify required secrets and inspect migration status
+        run: |
+          if [ -z "$DATABASE_URL" ] && [ -z "$DATABASE_URL_DIRECT" ]; then
+            echo "::error::DATABASE_URL (or DATABASE_URL_DIRECT) secret is not configured."
+            exit 1
+          fi
+          if [ -z "$VORTEX_SECRET_KEY" ]; then
+            echo "::error::VORTEX_SECRET_KEY secret is not configured."
+            exit 1
+          fi
+          npm run migrate:status
+          npm run migrate
+
+      - name: Execute scheduled job cycle
+        run: npm run job:run -- --job="${{ inputs.job || 'cycle' }}"

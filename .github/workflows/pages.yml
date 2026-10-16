@@ -1,12 +1,16 @@
 name: Deploy dashboard
 
-# Publishes apps/web to GitHub Pages.
+# Publishes apps/web to GitHub Pages (100% free-tier compatible).
 #
-# The dashboard is a static bundle that holds no secrets: it reads only the
-# relay's public plane, so the one build-time value it needs is the relay's
-# public origin. That value comes from the repository variable
-# VITE_RELAY_URL — never from a hard-coded URL in this file, because the relay
-# URL is only known once the relay is deployed.
+# Supported secret-free browser data modes (no paid Render relay required):
+#   1. Supabase Free read-only views (recommended): set repository variables
+#      VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. Migration 0007 enables RLS
+#      on all tables, revokes base-table privileges from anon/authenticated, and
+#      grants SELECT only on secret-free public_* views.
+#   2. Build-time static snapshot: when DATABASE_URL is configured in repository
+#      secrets, this workflow exports a redacted apps/web/public/snapshot.json
+#      before building the bundle.
+#   3. Optional self-hosted relay: set repository variable VITE_RELAY_URL.
 on:
   push:
     branches: [main]
@@ -16,7 +20,10 @@ on:
       - package.json
       - package-lock.json
       - scripts/assert-no-secrets-in-bundle.mjs
+      - scripts/export-snapshot.ts
       - .github/workflows/pages.yml
+  schedule:
+    - cron: '30 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -33,12 +40,16 @@ jobs:
   build:
     name: Build dashboard
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
-      # `base: './'` is already portable for a project Pages site
-      # (https://<owner>.github.io/<repo>/). Set VITE_BASE_PATH to '/' only if
-      # the dashboard is later served from a domain root.
-      VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH }}
+      VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || './' }}
       VITE_RELAY_URL: ${{ vars.VITE_RELAY_URL }}
+      VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+      VITE_DATA_SOURCE: ${{ vars.VITE_DATA_SOURCE }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,25 +58,46 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - name: Refuse to publish a bundle with no relay URL
+      - name: Export static status snapshot when DATABASE_URL is available
+        if: env.DATABASE_URL != '' || env.DATABASE_URL_DIRECT != ''
+        run: npm run snapshot:export
+
+      - name: Select and verify dashboard data source configuration
+        id: source
         run: |
-          if [ -z "$VITE_RELAY_URL" ]; then
-            echo "::error::Repository variable VITE_RELAY_URL is not set."
-            echo "Set it to the public origin of the deployed relay, e.g. the"
-            echo "https://<service>.onrender.com URL Render prints after the"
-            echo "first successful deploy (Settings -> Vortex SI -> Public)."
+          if [ -n "$VITE_RELAY_URL" ]; then
+            echo "mode=relay" >> "$GITHUB_OUTPUT"
+            echo "Relay origin configured: $VITE_RELAY_URL"
+          elif [ -n "$VITE_SUPABASE_URL" ] && [ -n "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "mode=supabase" >> "$GITHUB_OUTPUT"
+            echo "Supabase public read-only view origin configured: $VITE_SUPABASE_URL"
+          elif [ -f "apps/web/public/snapshot.json" ]; then
+            echo "mode=snapshot" >> "$GITHUB_OUTPUT"
+            echo "VITE_DATA_SOURCE=snapshot" >> "$GITHUB_ENV"
+            echo "Using exported static status snapshot (./snapshot.json)"
+          else
+            echo "::error::No dashboard data source is configured."
+            echo "Configure one of the free-tier options in Settings -> Secrets and variables -> Actions:"
+            echo "  1. Variables VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (live read-only public_* views on Supabase Free), or"
+            echo "  2. Secret DATABASE_URL (exports a sanitized static snapshot.json at build time), or"
+            echo "  3. Variable VITE_RELAY_URL (optional self-hosted HTTP relay)."
             exit 1
           fi
-          echo "Relay origin configured: $VITE_RELAY_URL"
 
       - name: Build
         run: npm run build:web
 
-      - name: Bundle guard (no secrets, no loopback API base)
+      - name: Bundle guard (no secrets, no privileged keys, no loopback API base)
         run: npm run guard:bundle
 
-      - name: Assert the deployed bundle points at the configured relay
-        run: node scripts/assert-relay-base.mjs "$VITE_RELAY_URL"
+      - name: Assert the deployed bundle points at the configured origin
+        if: steps.source.outputs.mode == 'relay' || steps.source.outputs.mode == 'supabase'
+        run: |
+          if [ "${{ steps.source.outputs.mode }}" = "relay" ]; then
+            node scripts/assert-relay-base.mjs "$VITE_RELAY_URL"
+          else
+            node scripts/assert-relay-base.mjs "$VITE_SUPABASE_URL"
+          fi
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

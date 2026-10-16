@@ -6,10 +6,13 @@
  * doing that work — so they are tested rather than trusted.
  */
 
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { loadConfig, publicRuntimeConfig, validateConfig } from '@vortex/core';
-import { listLocks, workerStatus, acquireLock, type SqlClient } from '@vortex/db';
+import { FREE_TIER_DEFAULT_PAIRS, loadConfig, publicRuntimeConfig, validateConfig } from '@vortex/core';
+import { claimJob, listKeys, listLocks, workerStatus, acquireLock, type SqlClient } from '@vortex/db';
 import { createHarness } from './helpers.js';
+import { createRelay } from '../src/http.js';
+import { expandSteps, jobModesFromArgv, runOneShot } from '../src/runner.js';
 import { WorkerRuntime } from '../src/runtime.js';
 import { WorkerScheduler } from '../src/scheduler.js';
 import { isRole, planForRole, roleFromArgv, ROLES } from '../src/role.js';
@@ -148,6 +151,122 @@ describe('singleton scheduler lease', () => {
       expect(scheduler.holdsLease).toBe(false);
       expect(result.ran).toEqual([]);
     } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('free-tier one-shot runner & honest status reporting', () => {
+  it('defaults to conservative free-tier pairs and warns if pair count exceeds single-key daily quota', () => {
+    const defaultCfg = loadConfig({ NODE_ENV: 'production', VORTEX_ROLE: 'worker' } as NodeJS.ProcessEnv);
+    expect(defaultCfg.pairs).toEqual([...FREE_TIER_DEFAULT_PAIRS]);
+    expect(defaultCfg.pairs.length).toBe(2);
+
+    const workerIssues = validateConfig(
+      loadConfig({
+        NODE_ENV: 'production',
+        VORTEX_ROLE: 'worker',
+        DATABASE_URL: 'postgres://user:pass@pooler.supabase.com:5432/postgres',
+        VORTEX_SECRET_KEY: 'a'.repeat(64),
+        VORTEX_ADMIN_TOKEN: '',
+      } as NodeJS.ProcessEnv),
+    );
+    expect(workerIssues.filter((i) => i.severity === 'error')).toHaveLength(0);
+
+    const overloadedCfg = loadConfig({
+      NODE_ENV: 'production',
+      VORTEX_ROLE: 'worker',
+      VORTEX_PAIRS: 'EUR/USD,GBP/USD,USD/JPY,USD/CHF,AUD/USD,USD/CAD,NZD/USD,EUR/GBP,EUR/JPY,GBP/JPY',
+    } as NodeJS.ProcessEnv);
+    const budgetIssues = validateConfig(overloadedCfg);
+    expect(budgetIssues.some((i) => i.key === 'VORTEX_PAIRS' && i.severity === 'warning')).toBe(true);
+  });
+
+  it('parses CLI job flags into deduplicated execution steps', () => {
+    expect(jobModesFromArgv(['node', 'main.ts'], {} as NodeJS.ProcessEnv)).toBeNull();
+    expect(jobModesFromArgv(['node', 'main.ts', '--once'], {} as NodeJS.ProcessEnv)).toEqual(['cycle']);
+    expect(jobModesFromArgv(['node', 'main.ts', '--job=ingest,learning'], {} as NodeJS.ProcessEnv)).toEqual([
+      'ingest',
+      'learning',
+    ]);
+    expect(expandSteps(['cycle'])).toEqual(['ingest', 'activate', 'settle', 'signals', 'maintenance']);
+    expect(expandSteps(['all'])).toEqual(['ingest', 'activate', 'settle', 'signals', 'learning', 'maintenance']);
+  });
+
+  it('runs a full one-shot cycle, recovers stale jobs, marks worker stopped on exit, and flags stale candles', async () => {
+    const h = await createHarness({
+      env: {
+        VORTEX_ROLE: 'worker',
+        VORTEX_PROVIDER: 'simulated',
+        TWELVEDATA_API_KEY: 'simulated-primary-key-0123456789abcdef',
+        VORTEX_PAIRS: 'EUR/USD,GBP/USD',
+        VORTEX_MAX_CANDLE_AGE_SECONDS: '90',
+      },
+      seedKey: false,
+    });
+    const server = createRelay(h.runtime);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const db = h.client;
+      const crashed = await claimJob(db, {
+        jobName: 'ingest_market_data',
+        slotKey: 'crashed-slot',
+        workerId: 'dead-gha-runner',
+      });
+      await db.query(`update job_runs set started_at = now() - interval '15 minutes' where id = $1`, [crashed.jobRunId]);
+
+      const report = await runOneShot(h.runtime, {
+        modes: ['all'],
+        now: new Date('2026-03-04T10:15:00.000Z'),
+        retries: 1,
+        retryDelayMs: 5,
+      });
+
+      expect(report.leaseAcquired).toBe(true);
+      expect(report.recovered.jobRunsRecovered).toBeGreaterThanOrEqual(1);
+      expect(report.failed).toEqual([]);
+      expect(report.ran.length).toBeGreaterThanOrEqual(4);
+
+      const keys = await listKeys(db);
+      expect(keys).toHaveLength(1);
+      expect(keys[0]?.label).toBe('twelvedata-primary');
+
+      // After runOneShot exits, the worker heartbeat is marked stopped (never CONNECTED).
+      const statuses = await workerStatus(db);
+      expect(statuses[0]?.liveness).toBe('STOPPING');
+
+      const summaryRes = await fetch(`${baseUrl}/api/summary`);
+      const summaryBody = (await summaryRes.json()) as {
+        ok: boolean;
+        data: {
+          workerStatus: string;
+          worker: { liveness: string; running: boolean } | null;
+          lastSuccessfulJob: { jobName: string; finishedAt: string; ageSeconds: number } | null;
+          marketData: { pair: string; status: string; ageSeconds: number | null; stale: boolean }[];
+        };
+      };
+      expect(summaryBody.ok).toBe(true);
+      expect(summaryBody.data.workerStatus).toBe('DISCONNECTED');
+      expect(summaryBody.data.worker?.liveness).toBe('DISCONNECTED');
+      expect(summaryBody.data.worker?.running).toBe(false);
+      expect(summaryBody.data.lastSuccessfulJob?.jobName).toBeDefined();
+
+      // Age the stored market_data_quality check timestamp by 20 minutes and confirm /api/summary flags it stale.
+      await db.query(
+        `update market_data_quality set checked_at = now() - interval '20 minutes', status = 'CONNECTED', age_seconds = 30`,
+      );
+      const staleRes = await fetch(`${baseUrl}/api/summary`);
+      const staleBody = (await staleRes.json()) as typeof summaryBody;
+      for (const row of staleBody.data.marketData) {
+        expect(row.stale).toBe(true);
+        expect(row.status).toBe('DISCONNECTED');
+        expect(row.ageSeconds).toBeGreaterThan(600);
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await h.close();
     }
   });

@@ -11,6 +11,7 @@
 
 import { toIso, type HealthComponent, type ServiceStatus } from '@vortex/core';
 import {
+  lastSuccessfulJob,
   listAlerts,
   listDeliveries,
   listHealth,
@@ -28,7 +29,7 @@ import {
   type SqlClient,
 } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
-import { withJob } from './job.js';
+import { withJob, type WithJobOptions } from './job.js';
 
 export interface MaintenanceSummary {
   components: Record<string, ServiceStatus>;
@@ -51,7 +52,7 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
   }
 
   /* ---------------------------------------------------------------- health */
-  const workers = await workerStatus(db);
+  const [workers, lastJob] = await Promise.all([workerStatus(db), lastSuccessfulJob(db)]);
   const liveWorkers = workers.filter((w) => w.liveness === 'CONNECTED');
   const staleWorkers = workers.filter((w) => w.liveness === 'DISCONNECTED');
   const dbState: HealthComponent = {
@@ -76,11 +77,24 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
     status: workerStatusValue,
     detail:
       liveWorkers.length > 0
-        ? `${liveWorkers.length} worker heartbeat(s) within 120s (last: ${liveWorkers[0]?.lastJob ?? 'n/a'})`
+        ? `${liveWorkers.length} worker heartbeat(s) within 120s (last: ${liveWorkers[0]?.lastJob ?? lastJob?.jobName ?? 'n/a'})`
         : workers.length > 0
-          ? `last heartbeat ${workers[0]?.secondsSince ?? '?'}s ago — the worker may be down`
-          : 'no worker heartbeat recorded yet',
-    metadata: { workers: workers.slice(0, 5) },
+          ? `last heartbeat ${workers[0]?.secondsSince ?? '?'}s ago — no persistent worker running`
+          : lastJob
+            ? `no persistent worker heartbeat; last successful job ${lastJob.jobName} at ${lastJob.finishedAt ?? lastJob.startedAt}`
+            : 'no worker heartbeat recorded yet',
+    metadata: {
+      workers: workers.slice(0, 5),
+      lastSuccessfulJob: lastJob
+        ? {
+            jobName: lastJob.jobName,
+            slotKey: lastJob.slotKey,
+            finishedAt: lastJob.finishedAt ?? lastJob.startedAt,
+            durationMs: lastJob.durationMs,
+            workerId: lastJob.workerId,
+          }
+        : null,
+    },
   });
   summary.components.worker = workerStatusValue;
 
@@ -223,14 +237,48 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
   const unresolvedCount = counts.UNRESOLVED ?? 0;
   const recentSignals = await listSignals(db, { limit: 200 });
   const settled = recentSignals.filter((s) => s.outcome !== null && s.outcome !== 'UNRESOLVED').length;
-  const signalStatus: ServiceStatus =
-    pending > 0 ? 'CONNECTED' : settled > 0 || unresolvedCount > 0 ? 'CONNECTED' : 'NOT VERIFIED';
+  const decisiveRecent = recentSignals.filter((s) => s.outcome === 'WIN' || s.outcome === 'LOSS');
+  let consecutiveLosses = 0;
+  for (const s of decisiveRecent) {
+    if (s.outcome === 'LOSS') consecutiveLosses += 1;
+    else break;
+  }
+  const winsCount = counts.WIN ?? 0;
+  const lossesCount = counts.LOSS ?? 0;
+  const decisiveCount = winsCount + lossesCount;
+  const winRate = decisiveCount > 0 ? Number((winsCount / decisiveCount).toFixed(4)) : null;
+  const lossAlertActive = consecutiveLosses >= 5 || (decisiveCount >= 10 && winRate !== null && winRate < 0.35);
+
+  if (lossAlertActive) {
+    await raiseAlert(db, {
+      severity: 'WARNING',
+      code: 'signals-loss-streak',
+      title:
+        consecutiveLosses >= 5
+          ? `${consecutiveLosses} consecutive losing signals observed`
+          : `Signal win rate is ${(winRate! * 100).toFixed(1)}% over ${decisiveCount} decisive outcomes`,
+      detail: 'Loss monitor triggered. Review market regime, strategy weights, and recent drift reports.',
+      metadata: { consecutiveLosses, wins: winsCount, losses: lossesCount, winRate },
+    });
+    summary.alertsRaised.push('signals-loss-streak');
+  } else if (await resolveAlert(db, 'signals-loss-streak')) {
+    summary.alertsResolved.push('signals-loss-streak');
+  }
+
+  const signalStatus: ServiceStatus = lossAlertActive
+    ? 'DEGRADED'
+    : pending > 0
+      ? 'CONNECTED'
+      : settled > 0 || unresolvedCount > 0
+        ? 'CONNECTED'
+        : 'NOT VERIFIED';
   await setComponentHealth(db, {
     component: 'signals',
     status: signalStatus,
-    detail: `${pending} in flight · ${counts.WIN ?? 0} wins · ${counts.LOSS ?? 0} losses · ${counts.DRAW ?? 0} draws · ${unresolvedCount} unresolved`,
-    metadata: counts,
+    detail: `${pending} in flight · ${winsCount} wins · ${lossesCount} losses · ${counts.DRAW ?? 0} draws · ${unresolvedCount} unresolved`,
+    metadata: { ...counts, consecutiveLosses, winRate },
   });
+  summary.components.signals = signalStatus;
 
   const engineVersionId = runtime.config.engineVersion;
   const champion = await runtime.models.champion();
@@ -262,12 +310,22 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
   return summary;
 }
 
-export async function runMaintenanceJob(runtime: WorkerRuntime, now = new Date()): Promise<void> {
+export async function runMaintenanceJob(
+  runtime: WorkerRuntime,
+  now = new Date(),
+  options: WithJobOptions = {},
+): Promise<{ ran: boolean; status: string; detail?: Record<string, unknown> }> {
   const slot = `maintenance-${toIso(Math.floor(now.getTime() / 300_000) * 300_000)}`;
-  await withJob(runtime, 'maintenance', slot, async () => {
-    const summary = await runMaintenance(runtime, now);
-    return { status: 'SUCCEEDED', detail: { ...summary } };
-  });
+  return withJob(
+    runtime,
+    'maintenance',
+    slot,
+    async () => {
+      const summary = await runMaintenance(runtime, now);
+      return { status: 'SUCCEEDED', detail: { ...summary } };
+    },
+    options,
+  );
 }
 
 export async function healthSnapshot(runtime: WorkerRuntime): Promise<HealthComponent[]> {

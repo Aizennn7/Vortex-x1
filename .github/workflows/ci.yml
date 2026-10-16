@@ -14,6 +14,7 @@ jobs:
   quality:
     name: Typecheck and test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,17 +24,27 @@ jobs:
       - run: npm ci
       - name: Typecheck every workspace
         run: npm run typecheck
+      - name: Validate GitHub Actions workflows and migration safety
+        run: npm run validate:workflows
       - name: Unit and integration tests (embedded Postgres)
         run: npm test
       - name: Smoke test the full pipeline
         run: npm run smoke
         env:
           VORTEX_PROVIDER: simulated
+      - name: Test the one-shot GitHub Actions job runner against embedded Postgres
+        run: npm run job:run -- --job=all
+        env:
+          VORTEX_USE_EMBEDDED_DB: 'true'
+          VORTEX_PROVIDER: simulated
+          VORTEX_SECRET_KEY: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'
+          TWELVEDATA_API_KEY: 'simulated-primary-key-0123456789'
 
   build:
     name: Build and guard the dashboard bundle
     runs-on: ubuntu-latest
     needs: quality
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,12 +52,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Build the dashboard the way the Pages workflow does
+      - name: Build the dashboard (Supabase public views mode)
         run: npm run build:web
         env:
-          # RFC 2606 reserved TLD: can never resolve, so this is a fixture and
-          # not an invented production URL. The real value is the repository
-          # variable VITE_RELAY_URL, supplied by the Pages workflow only.
+          VITE_SUPABASE_URL: https://supabase.invalid
+          VITE_SUPABASE_ANON_KEY: sb_publishable_ci_fixture_anon
+      - name: Verify the Supabase-mode bundle contains no secrets and points at Supabase origin
+        run: |
+          npm run guard:bundle
+          node scripts/assert-relay-base.mjs https://supabase.invalid
+      - name: Build the dashboard (Relay mode)
+        run: npm run build:web
+        env:
           VITE_RELAY_URL: https://relay.invalid
       - name: Verify the bundle contains no secrets and no loopback API base
         run: npm run guard:bundle
@@ -54,8 +71,6 @@ jobs:
         run: node scripts/assert-relay-base.mjs https://relay.invalid
       - uses: actions/upload-artifact@v4
         with:
-          # Named to make clear this is a build check, not a deployable site:
-          # it carries the reserved-TLD fixture relay, never a real origin.
           name: vortex-web-ci-check
           path: apps/web/dist
           retention-days: 7
