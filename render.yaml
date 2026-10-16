@@ -1,0 +1,153 @@
+# ============================================================================
+# VORTEX SI — Render deployment blueprint
+#
+# Two persistent services, one database, no secrets in version control:
+#
+#   vortex-si-relay   type: web    — public API + control centre (`/health`, `/api/*`)
+#   vortex-si-worker  type: worker — ingestion, signals, settlement, training
+#
+# Both are `autoDeploy: false`: nothing reaches the hosted environment until a
+# human triggers the first deploy, which is the staging-first contract. Flip to
+# `autoDeployTrigger: commit` only after staging has been verified.
+#
+# Apply:  Render dashboard -> New -> Blueprint -> point at this repository.
+# Secrets marked `sync: false` are entered once per service in the dashboard.
+# Run `node scripts/generate-secrets.mjs` locally to mint the two values that
+# MUST be identical in both services (VORTEX_SECRET_KEY, VORTEX_ADMIN_TOKEN).
+#
+# No database is declared here on purpose: production data lives in the existing
+# Supabase project. This blueprint never creates, resets or migrates a database
+# behind your back.
+# ============================================================================
+
+envVarGroups:
+  # Shared, non-secret runtime configuration. Identical in both services so the
+  # relay and the worker can never disagree about pairs, cadence or provider.
+  - name: vortex-runtime
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.3
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: info
+      - key: VORTEX_PROVIDER
+        value: twelvedata
+      # Staging default: two pairs keeps a free Twelve Data plan (8 credits/min,
+      # 800/day) comfortably inside its budget. One ingest request per pair per
+      # minute is roughly pairs x 1440 credits/day — raise this only after
+      # checking the real plan limits for the keys you added.
+      - key: VORTEX_PAIRS
+        value: EUR/USD,GBP/USD
+      # Public origin of the GitHub Pages dashboard (CORS + Telegram links).
+      - key: VORTEX_PUBLIC_WEB_URL
+        value: https://aizennn7.github.io/Vortex-x1
+      - key: VORTEX_CORS_ORIGINS
+        value: https://aizennn7.github.io
+      - key: VORTEX_DB_REQUIRED
+        value: "true"
+      - key: VORTEX_USE_EMBEDDED_DB
+        value: "false"
+      - key: VORTEX_AUTO_MIGRATE
+        value: "false"
+
+services:
+  # ---------------------------------------------------------------------
+  # Public relay. Read-only API for the dashboard plus the token-guarded
+  # /admin plane. It never schedules a cycle, so a redeploy here cannot
+  # interrupt market ingestion.
+  # ---------------------------------------------------------------------
+  - type: web
+    name: vortex-si-relay
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: main
+    autoDeploy: false
+    # tsx runs the TypeScript sources directly, so dev dependencies (tsx,
+    # typescript) must survive NODE_ENV=production. `--include=dev` forces that.
+    buildCommand: npm ci --include=dev
+    startCommand: npm run start:relay
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      - fromGroup: vortex-runtime
+      - key: VORTEX_ROLE
+        value: relay
+      - key: VORTEX_INSTANCE_LABEL
+        value: relay
+      # ---- secrets: enter in the Render dashboard, never commit -----------
+      - key: DATABASE_URL
+        sync: false # Supabase pooled connection string (port 5432/6543)
+      - key: DATABASE_URL_DIRECT
+        sync: false # Supabase direct connection, used by `npm run migrate`
+      - key: VORTEX_SECRET_KEY
+        sync: false # SAME value as on vortex-si-worker (openssl rand -base64 32)
+      - key: VORTEX_ADMIN_TOKEN
+        sync: false # SAME value as on vortex-si-worker (openssl rand -hex 32)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false # server-side only; never exposed to the browser
+      - key: TELEGRAM_CHANNEL_PRIMARY
+        sync: false # e.g. @vortexsignals or -1001234567890
+      - key: TELEGRAM_CHANNEL_SECONDARY
+        sync: false # optional
+      - key: VORTEX_TELEGRAM_ENABLED
+        value: "false"
+      # Synthetic market data must never be delivered to a real audience.
+      - key: VORTEX_ALLOW_SYNTHETIC_SIGNALS
+        value: "false"
+
+  # ---------------------------------------------------------------------
+  # Background worker. Long-running scheduler: ingestion, signal publishing,
+  # settlement, maintenance and nightly training. Binds no port and publishes
+  # its own liveness heartbeat, so the relay is not required to be up.
+  # ---------------------------------------------------------------------
+  - type: worker
+    name: vortex-si-worker
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: main
+    autoDeploy: false
+    buildCommand: npm ci --include=dev
+    startCommand: npm run start:worker
+    envVars:
+      - fromGroup: vortex-runtime
+      - key: VORTEX_ROLE
+        value: worker
+      # Names this instance in worker_heartbeats.instance_label, so two workers
+      # are always distinguishable in the control centre.
+      - key: VORTEX_INSTANCE_LABEL
+        value: worker-1
+      - key: VORTEX_HEARTBEAT_SECONDS
+        value: "30"
+      - key: VORTEX_HEARTBEAT_STALE_SECONDS
+        value: "120"
+      - key: VORTEX_JOB_LOCK_TTL_SECONDS
+        value: "300"
+      # ---- secrets: enter in the Render dashboard, never commit -----------
+      - key: DATABASE_URL
+        sync: false # Supabase pooled connection string (port 5432/6543)
+      - key: DATABASE_URL_DIRECT
+        sync: false # Supabase direct connection, used by `npm run migrate`
+      - key: VORTEX_SECRET_KEY
+        sync: false # SAME value as on vortex-si-relay (openssl rand -base64 32)
+      - key: VORTEX_ADMIN_TOKEN
+        sync: false # SAME value as on vortex-si-relay (openssl rand -hex 32)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false # server-side only; never exposed to the browser
+      - key: TELEGRAM_CHANNEL_PRIMARY
+        sync: false # e.g. @vortexsignals or -1001234567890
+      - key: TELEGRAM_CHANNEL_SECONDARY
+        sync: false # optional
+      - key: VORTEX_TELEGRAM_ENABLED
+        value: "false"
+      - key: VORTEX_ALLOW_SYNTHETIC_SIGNALS
+        value: "false"
+
+# Preview (pull request) deploys stay off: a preview would need the production
+# secrets, and a preview worker would compete for the scheduler lease.
+previews:
+  generation: none

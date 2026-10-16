@@ -48,6 +48,28 @@ If `VORTEX_ADMIN_TOKEN` is unset or shorter than 16 characters the privileged pl
 configuration_required` rather than being left open. Every response passes through the redaction filter, so a
 configuration mistake cannot leak a key through the API surface.
 
+### Roles
+
+One codebase, three process roles (`VORTEX_ROLE`, or `--role=` on the command line):
+
+| Role | Binds a port | Schedules work | Use for |
+| --- | --- | --- | --- |
+| `relay` | yes | never | the public web service |
+| `worker` | no | yes | the background worker |
+| `all` (default) | yes | yes | local development |
+
+```bash
+npm run start:relay    # == tsx apps/worker/src/main.ts --role=relay
+npm run start:worker   # == tsx apps/worker/src/main.ts --role=worker
+npm run start:all      # == tsx apps/worker/src/main.ts --role=all
+```
+
+Splitting them means a redeploy of the public API cannot interrupt ingestion. Running
+several workers is safe: the `vortex-scheduler` lease (`job_locks`) makes exactly one of
+them the active scheduler, and the others log `standby` and write no heartbeat, so the
+dashboard never shows a worker that is alive but idle. Job slots in `job_runs` still stop
+any single cycle from running twice.
+
 ### Database
 
 Migrations live in `packages/db/migrations` and are applied by the worker (`VORTEX_AUTO_MIGRATE=true`) or manually:
@@ -71,7 +93,31 @@ npm run guard:bundle   # fails if the bundle contains a secret shape or a loopba
 ```
 
 Set `VITE_RELAY_URL` when the relay is on a different origin; otherwise the bundle calls the origin it was served
-from.
+from. `VITE_BASE_PATH` overrides the public base path — `./` (the default) is correct for a GitHub Pages project site
+at `https://<owner>.github.io/<repo>/`.
+
+```bash
+node scripts/assert-relay-base.mjs https://<relay-host>   # fails if the built bundle calls anything else
+```
+
+## Deploying
+
+Full runbook — Supabase, Render, GitHub Pages, provider quotas, Telegram, and the checks
+that prove the system is actually running — in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
+The short version:
+
+| Piece | Host | Configured by |
+| --- | --- | --- |
+| Dashboard | GitHub Pages | `.github/workflows/pages.yml` + repo variable `VITE_RELAY_URL` |
+| Relay + worker | Render | `render.yaml` (Blueprint) |
+| Database | Supabase | `npm run migrate` against `DATABASE_URL_DIRECT` |
+
+```bash
+node scripts/generate-secrets.mjs   # prints VORTEX_SECRET_KEY + VORTEX_ADMIN_TOKEN, writes nothing to disk
+```
+
+Secrets live only in the Render dashboard and in Supabase. Nothing in this repository contains one.
 
 ## How a signal is produced
 
@@ -109,13 +155,17 @@ See `.env.example` for the full list. The ones that matter most:
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | Postgres/Supabase connection string used by the worker |
-| `VORTEX_SECRET_KEY` | 32-byte key (hex or base64) that encrypts provider keys at rest |
+| `DATABASE_URL` | Postgres/Supabase connection string used by the relay and the worker |
+| `DATABASE_URL_DIRECT` | Direct (unpooled) connection used by `npm run migrate` |
+| `VORTEX_SECRET_KEY` | 32-byte key (hex or base64) that encrypts provider keys at rest — **identical on every service** |
 | `VORTEX_ADMIN_TOKEN` | Bearer token for `/admin/*`; the privileged plane is closed without it |
+| `VORTEX_ROLE` | `relay`, `worker` or `all`; which half of the system this process runs |
 | `VORTEX_PROVIDER` | `twelvedata` or `simulated` |
 | `VORTEX_PAIRS` | Comma-separated pairs, e.g. `EUR/USD,GBP/USD` |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHANNELS` | Delivery destination(s) |
+| `VORTEX_PROVIDER_RPM_PER_KEY` / `VORTEX_PROVIDER_RPD_PER_KEY` | Your real provider plan limits; the pool never exceeds them |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHANNEL_PRIMARY` | Delivery destination(s) |
 | `VORTEX_ALLOW_SYNTHETIC_SIGNALS` | Explicit opt-in before simulated signals may be delivered |
+| `VITE_RELAY_URL` / `VITE_BASE_PATH` | Build-time only, read by the static dashboard bundle |
 
 ## Status
 

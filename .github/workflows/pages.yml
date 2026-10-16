@@ -1,0 +1,84 @@
+name: Deploy dashboard
+
+# Publishes apps/web to GitHub Pages.
+#
+# The dashboard is a static bundle that holds no secrets: it reads only the
+# relay's public plane, so the one build-time value it needs is the relay's
+# public origin. That value comes from the repository variable
+# VITE_RELAY_URL — never from a hard-coded URL in this file, because the relay
+# URL is only known once the relay is deployed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/web/**
+      - packages/core/**
+      - package.json
+      - package-lock.json
+      - scripts/assert-no-secrets-in-bundle.mjs
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy that is already publishing.
+concurrency:
+  group: pages-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build dashboard
+    runs-on: ubuntu-latest
+    env:
+      # `base: './'` is already portable for a project Pages site
+      # (https://<owner>.github.io/<repo>/). Set VITE_BASE_PATH to '/' only if
+      # the dashboard is later served from a domain root.
+      VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH }}
+      VITE_RELAY_URL: ${{ vars.VITE_RELAY_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Refuse to publish a bundle with no relay URL
+        run: |
+          if [ -z "$VITE_RELAY_URL" ]; then
+            echo "::error::Repository variable VITE_RELAY_URL is not set."
+            echo "Set it to the public origin of the deployed relay, e.g. the"
+            echo "https://<service>.onrender.com URL Render prints after the"
+            echo "first successful deploy (Settings -> Vortex SI -> Public)."
+            exit 1
+          fi
+          echo "Relay origin configured: $VITE_RELAY_URL"
+
+      - name: Build
+        run: npm run build:web
+
+      - name: Bundle guard (no secrets, no loopback API base)
+        run: npm run guard:bundle
+
+      - name: Assert the deployed bundle points at the configured relay
+        run: node scripts/assert-relay-base.mjs "$VITE_RELAY_URL"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

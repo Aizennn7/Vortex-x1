@@ -1,25 +1,43 @@
 /**
  * VORTEX SI worker entry point.
  *
- * Boots the runtime, applies migrations (when explicitly enabled), starts the
- * HTTP relay for the control centre and runs the tick scheduler until it is
- * asked to stop. Graceful shutdown matters: the database connection is only
- * closed after the in-flight tick completes, so a restart never leaves a half
- * written settlement behind.
+ * One binary, three roles (`VORTEX_ROLE`, or `--role=` on the command line):
+ *
+ *   relay  — binds the HTTP relay and nothing else. Safe to restart, scale and
+ *            expose publicly: it never schedules a cycle.
+ *   worker — runs the tick scheduler (ingestion, signals, settlement,
+ *            maintenance, training) and binds no port at all.
+ *   all    — both in one process; the default, used for local development.
+ *
+ * A production deployment runs `relay` and `worker` as two services so the
+ * public surface can be redeployed without interrupting ingestion. Both roles
+ * share the database, the job slots and the scheduler lease, so running either
+ * of them twice is still safe.
+ *
+ * Graceful shutdown matters: the scheduler drains its in-flight tick, the relay
+ * stops accepting connections and the database is only closed afterwards, so a
+ * restart never leaves a half written settlement behind.
  */
 
-import { validateConfig } from '@vortex/core';
+import type { Server } from 'node:http';
+import { validateConfig, type VortexConfig } from '@vortex/core';
 import { migrate } from '@vortex/db';
 import { WorkerRuntime } from './runtime.js';
 import { WorkerScheduler } from './scheduler.js';
 import { createRelay } from './http.js';
+import { planForRole, roleFromArgv, type Role } from './role.js';
 
 async function main(): Promise<void> {
-  const runtime = await WorkerRuntime.create();
+  const cliRole = roleFromArgv();
+  const runtime = await WorkerRuntime.create(cliRole ? { config: { role: cliRole } as Partial<VortexConfig> } : {});
   const logger = runtime.logger;
+
+  const role: Role = runtime.config.role;
+  const { relay: servesRelay, scheduler: runsScheduler } = planForRole(role);
 
   logger.info('VORTEX SI worker starting', {
     component: 'boot',
+    role,
     version: runtime.config.engineVersion,
     env: runtime.config.nodeEnv,
     provider: runtime.config.provider,
@@ -28,6 +46,7 @@ async function main(): Promise<void> {
     cadenceMinutes: runtime.config.scanCadenceMinutes,
     publishLeadSeconds: runtime.config.publishLeadSeconds,
     horizonSeconds: runtime.config.signalHorizonSeconds,
+    workerId: runtime.config.workerId,
     database: runtime.db.connected ? 'connected' : 'unavailable',
   });
 
@@ -53,32 +72,50 @@ async function main(): Promise<void> {
     });
   }
 
-  const relay = createRelay(runtime);
-  const port = runtime.config.port;
-  const host = runtime.config.host;
-  await new Promise<void>((resolve, reject) => {
-    relay.once('error', reject);
-    relay.listen(port, host, () => resolve());
-  });
-  logger.info('relay listening', {
-    component: 'http',
-    host,
-    port,
-    publicRoutes: ['/health', '/ready', '/api/summary', '/api/config', '/api/signals', '/api/performance'],
-    adminRoutesEnabled: runtime.config.adminToken.length >= 16,
-  });
+  let relay: Server | null = null;
+  if (servesRelay) {
+    relay = createRelay(runtime);
+    const port = runtime.config.port;
+    const host = runtime.config.host;
+    await new Promise<void>((resolve, reject) => {
+      (relay as Server).once('error', reject);
+      (relay as Server).listen(port, host, () => resolve());
+    });
+    logger.info('relay listening', {
+      component: 'http',
+      host,
+      port,
+      publicRoutes: ['/health', '/ready', '/api/summary', '/api/config', '/api/signals', '/api/performance'],
+      adminRoutesEnabled: runtime.config.adminToken.length >= 16,
+    });
+  } else {
+    logger.info('relay not started — this process runs the scheduler only (VORTEX_ROLE=worker)', {
+      component: 'http',
+      role,
+    });
+  }
 
-  const scheduler = new WorkerScheduler(runtime);
-  if (!runtime.stopping) scheduler.start();
+  let scheduler: WorkerScheduler | null = null;
+  if (runsScheduler) {
+    scheduler = new WorkerScheduler(runtime);
+    if (!runtime.stopping) scheduler.start();
+  } else {
+    logger.info('scheduler not started — this process serves the relay only (VORTEX_ROLE=relay)', {
+      component: 'scheduler',
+      role,
+    });
+  }
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
-    if (runtime.stopping) return;
-    logger.info('shutdown requested', { component: 'boot', signal });
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info('shutdown requested', { component: 'boot', signal, role });
     runtime.stopping = true;
-    await scheduler.stop();
-    await new Promise<void>((resolve) => relay.close(() => resolve()));
+    if (scheduler) await scheduler.stop();
+    if (relay) await new Promise<void>((resolve) => relay?.close(() => resolve()));
     await runtime.close();
-    logger.info('worker stopped cleanly', { component: 'boot', counters: runtime.counters });
+    logger.info('worker stopped cleanly', { component: 'boot', role, counters: runtime.counters });
     process.exit(0);
   };
 
@@ -99,6 +136,7 @@ async function main(): Promise<void> {
   if (!runtime.db.connected && runtime.config.nodeEnv === 'production') {
     logger.error('database is not reachable in production — ingestion, signals and settlement will not run', {
       component: 'boot',
+      role,
       detail: runtime.db.detail,
       issues: validateConfig(runtime.config).map((i) => i.key),
     });
@@ -106,6 +144,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  process.stderr.write(`${JSON.stringify({ level: 'fatal', msg: 'worker failed to start', error: (error as Error).message })}\n`);
+  process.stderr.write(
+    `${JSON.stringify({ level: 'fatal', msg: 'worker failed to start', error: (error as Error).message })}\n`,
+  );
   process.exit(1);
 });
