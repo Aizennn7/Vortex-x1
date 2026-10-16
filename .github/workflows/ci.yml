@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck every workspace
+        run: npm run typecheck
+      - name: Unit and integration tests (embedded Postgres)
+        run: npm test
+      - name: Smoke test the full pipeline
+        run: npm run smoke
+        env:
+          VORTEX_PROVIDER: simulated
+
+  build:
+    name: Build and guard the dashboard bundle
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - name: Verify the bundle contains no secrets and no loopback API base
+        run: npm run guard:bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vortex-web
+          path: apps/web/dist
+          retention-days: 7
+      - name: Fail if the deployed migrations drift from the source migrations
+        run: |
+          npm run db:sync-supabase
+          git diff --exit-code -- supabase/migrations

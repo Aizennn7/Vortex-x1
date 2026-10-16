@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vite/
+.DS_Store
+
+# Local environment / secrets — never commit
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local runtime data (worker dev database, model artifacts, logs)
+.data/
+artifacts/
+*.log
+logs/
+.vortex-local/
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json

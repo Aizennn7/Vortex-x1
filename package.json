@@ -1,0 +1,43 @@
+{
+  "name": "vortex-si",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VORTEX SI \u2014 Intelligence in Motion. Learn. Adapt. Evolve.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:core": "npm run build -w @vortex/core",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:core": "vitest run packages/core",
+    "test:db": "vitest run packages/db",
+    "test:worker": "vitest run apps/worker",
+    "test:web": "vitest run apps/web",
+    "migrate": "tsx packages/db/src/cli/migrate.ts",
+    "migrate:status": "tsx packages/db/src/cli/migrate.ts status",
+    "dev:worker": "tsx watch apps/worker/src/main.ts",
+    "dev:web": "npm run dev -w @vortex/web",
+    "worker": "tsx apps/worker/src/main.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "db:sync-supabase": "node scripts/sync-supabase-migrations.mjs",
+    "build:web": "npm run build -w @vortex/web",
+    "guard:bundle": "node scripts/assert-no-secrets-in-bundle.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

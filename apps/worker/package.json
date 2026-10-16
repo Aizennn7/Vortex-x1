@@ -1,0 +1,10 @@
+{
+  "name": "@vortex/worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VORTEX SI always-on worker: ingestion, signal scheduling, settlement, Telegram delivery, learning, health relay.",
+  "main": "./src/main.ts",
+  "scripts": { "start": "tsx src/main.ts", "typecheck": "tsc --noEmit -p tsconfig.json" },
+  "dependencies": { "@vortex/core": "*", "@vortex/db": "*", "@vortex/provider": "*" }
+}
