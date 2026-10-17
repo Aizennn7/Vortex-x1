@@ -31,7 +31,8 @@ jobs:
       - name: "Fail closed on a relative database URL (regression: getaddrinfo base)"
         run: |
           set +e
-          DATABASE_URL=base npm run db:diagnose -- --config-only > diagnostic.log 2>&1
+          # Suppress GitHub annotations for this deliberate failure.
+          GITHUB_ACTIONS= DATABASE_URL=base npm run db:diagnose -- --config-only > diagnostic.log 2>&1
           status=$?
           set -e
           cat diagnostic.log
