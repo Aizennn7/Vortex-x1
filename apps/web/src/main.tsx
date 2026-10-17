@@ -329,10 +329,9 @@ function Dashboard() {
         method: 'POST',
         headers: { accept: 'application/json', authorization: 'Bearer ' + adminToken.trim() },
       });
-      const body = await response.json() as { ok?: boolean; data?: { status?: string; detail?: Record<string, unknown> }; error?: { message?: string } };
+      const body = await response.json() as { ok?: boolean; data?: { published?: number; job?: { status?: string; ran?: boolean } }; error?: { message?: string } };
       if (!response.ok || body.ok === false) throw new Error(body.error?.message ?? ('Scan request failed (HTTP ' + response.status + ')'));
-      const detail = body.data?.detail;
-      const published = typeof detail?.published === 'number' ? detail.published : null;
+      const published = typeof body.data?.published === 'number' ? body.data.published : null;
       setSignalActionStatus(published === null
         ? profile + ' start accepted by the relay. Check scan status for the outcome.'
         : published > 0
