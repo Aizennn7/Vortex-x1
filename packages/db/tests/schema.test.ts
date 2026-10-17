@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checksumOf, loadMigrations, migrate, status } from '../src/migrate.js';
+import { PGlite } from '@electric-sql/pglite';
+import { checksumOf, hasMigrationsTable, loadMigrations, migrate, status } from '../src/migrate.js';
+import { PgliteClient } from '../src/pglite.js';
 import { createTestDb, type TestDb } from './helpers.js';
 
 let db: TestDb;
@@ -194,5 +196,55 @@ describe('access control', () => {
     const names = columns.rows.map((c) => c.column_name);
     expect(names).toContain('channel_label');
     expect(names).not.toContain('chat_id');
+  });
+});
+
+
+describe('read-only migration checks', () => {
+  async function freshClient(): Promise<{ client: PgliteClient; close: () => Promise<void> }> {
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const client = new PgliteClient(pglite);
+    return { client, close: async () => client.close() };
+  }
+
+  it('status() never creates schema_migrations and reports every migration pending', async () => {
+    const { client, close } = await freshClient();
+    try {
+      expect(await hasMigrationsTable(client)).toBe(false);
+      const rows = await status(client);
+      expect(rows.length).toBeGreaterThanOrEqual(7);
+      expect(rows.every((row) => row.appliedAt === null)).toBe(true);
+      expect(rows.every((row) => row.drift === false)).toBe(true);
+      // The read-only status must not have created the bookkeeping table.
+      expect(await hasMigrationsTable(client)).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it('migrate({ dryRun: true }) writes nothing on a fresh database', async () => {
+    const { client, close } = await freshClient();
+    try {
+      const result = await migrate(client, { dryRun: true });
+      expect(result.applied).toHaveLength(0);
+      expect(await hasMigrationsTable(client)).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it('the real migrate command creates the table and status then reports applied', async () => {
+    const { client, close } = await freshClient();
+    try {
+      const applied = await migrate(client);
+      expect(applied.applied.length).toBeGreaterThanOrEqual(7);
+      expect(await hasMigrationsTable(client)).toBe(true);
+      const rows = await status(client);
+      expect(rows.every((row) => row.appliedAt !== null)).toBe(true);
+      expect(rows.every((row) => row.drift === false)).toBe(true);
+    } finally {
+      await close();
+    }
   });
 });

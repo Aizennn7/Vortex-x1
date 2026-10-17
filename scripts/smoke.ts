@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   PgliteClient,
-  createPostgresClient,
+  createPostgresClientFromTarget,
   encryptSecret,
   getAccount,
   insertKey,
@@ -23,6 +23,7 @@ import {
   listQuality,
   listSignals,
   migrate,
+  resolveDatabaseConnection,
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
@@ -53,12 +54,13 @@ function record(name: string, detail: string, ok = true): void {
 
 async function openClient(): Promise<{ client: SqlClient; label: string }> {
   if (useDatabase) {
-    const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
-    if (!url) throw new Error('DATABASE_URL is required with --database');
-    const client = createPostgresClient(url, { applicationName: 'vortex-smoke', max: 2 });
+    const resolved = resolveDatabaseConnection({ purpose: 'migration' });
+    if (!resolved.target) throw new Error('DATABASE_URL (Session Pooler) is required with --database');
+    for (const warning of resolved.warnings) console.log(`  warning: ${warning}`);
+    const client = createPostgresClientFromTarget(resolved.target, { applicationName: 'vortex-smoke', max: 2 });
     const ping = await client.ping();
     if (!ping.ok) throw new Error(`database unreachable: ${ping.detail}`);
-    return { client, label: 'postgres (DATABASE_URL)' };
+    return { client, label: `postgres (${resolved.target.describe().kind})` };
   }
   return { client: await PgliteClient.create(), label: 'embedded PGlite' };
 }

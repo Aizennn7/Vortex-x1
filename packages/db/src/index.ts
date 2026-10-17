@@ -3,6 +3,7 @@
  */
 
 export * from './driver.js';
+export * from './connection.js';
 export * from './postgres.js';
 export * from './pglite.js';
 export * from './crypto.js';
@@ -29,6 +30,8 @@ export interface DatabaseHandle {
   /** True when the handle is usable; false when the DB is unreachable. */
   connected: boolean;
   detail: string;
+  /** Non-fatal configuration advice (never contains secret values). */
+  warnings?: string[];
 }
 
 /**
@@ -48,11 +51,19 @@ export async function openDatabase(params: {
     }
     return { client: null as unknown as SqlClient, kind: 'postgres', connected: false, detail: 'DATABASE_URL not configured' };
   }
-  const client = new PostgresClient({
-    connectionString: params.connectionString,
-    max: params.maxConnections ?? 5,
-    applicationName: params.applicationName ?? 'vortex-si',
-  });
+  let client: PostgresClient;
+  try {
+    client = new PostgresClient({
+      connectionString: params.connectionString,
+      max: params.maxConnections ?? 5,
+      applicationName: params.applicationName ?? 'vortex-si',
+    });
+  } catch (error) {
+    // Invalid/placeholder connection strings are configuration errors, not
+    // transient outages. Surface the safe message instead of attempting DNS.
+    if (params.required) throw error;
+    return { client: null as unknown as SqlClient, kind: 'postgres', connected: false, detail: (error as Error).message };
+  }
   try {
     const ping = await client.ping();
     if (!ping.ok) {

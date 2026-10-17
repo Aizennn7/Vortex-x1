@@ -53,6 +53,9 @@ jobs:
             echo "::error::VORTEX_SECRET_KEY secret is not configured."
             exit 1
           fi
+          # Validate the URI before any network call. This fails closed with an
+          # actionable message instead of `getaddrinfo EAI_AGAIN base`.
+          npm run db:diagnose -- --config-only --require-configured
           npm run migrate:status
           npm run migrate
 

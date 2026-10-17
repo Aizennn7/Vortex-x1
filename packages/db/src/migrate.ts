@@ -71,9 +71,44 @@ export async function ensureMigrationsTable(client: SqlClient): Promise<void> {
   `);
 }
 
-export async function status(client: SqlClient, migrations?: MigrationFile[]): Promise<MigrationStatus[]> {
+/**
+ * Read-only existence probe. `to_regclass` never creates anything, so status
+ * checks are safe to run against production from a read-only diagnostic.
+ */
+export async function hasMigrationsTable(client: SqlClient): Promise<boolean> {
+  const result = await client.query<{ table: string | null }>(
+    "select to_regclass('public.schema_migrations')::text as table",
+  );
+  return Boolean(result.rows[0]?.table);
+}
+
+export interface StatusOptions {
+  /**
+   * Default true: never create `schema_migrations` from a status check.
+   * A read-only status on a fresh database reports every migration PENDING.
+   */
+  readOnly?: boolean;
+}
+
+export async function status(
+  client: SqlClient,
+  migrations?: MigrationFile[],
+  options: StatusOptions = {},
+): Promise<MigrationStatus[]> {
   const files = migrations ?? (await loadMigrations());
-  await ensureMigrationsTable(client);
+  const readOnly = options.readOnly ?? true;
+
+  if (readOnly && !(await hasMigrationsTable(client))) {
+    return files.map((file) => ({
+      version: file.version,
+      name: file.name,
+      checksum: file.checksum,
+      appliedAt: null,
+      drift: false,
+    }));
+  }
+
+  if (!readOnly) await ensureMigrationsTable(client);
   const rows = await client.query<{ version: string; checksum: string; applied_at: string | Date }>(
     'select version, checksum, applied_at from schema_migrations',
   );
@@ -102,10 +137,14 @@ export async function migrate(
   const log = options.log ?? (() => undefined);
   const started = Date.now();
   const files = await loadMigrations(options.dir);
-  await ensureMigrationsTable(client);
-  const rows = await client.query<{ version: string; checksum: string }>(
-    'select version, checksum from schema_migrations',
-  );
+  const tableExists = await hasMigrationsTable(client);
+  if (!tableExists && !options.dryRun) {
+    // Only the real migrate command may create the bookkeeping table.
+    await ensureMigrationsTable(client);
+  }
+  const rows = tableExists
+    ? await client.query<{ version: string; checksum: string }>('select version, checksum from schema_migrations')
+    : { rows: [] as { version: string; checksum: string }[], rowCount: 0 };
   const applied = new Map(rows.rows.map((r) => [r.version, r.checksum]));
 
   const drifted: string[] = [];

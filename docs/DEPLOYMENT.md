@@ -38,7 +38,8 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 
 | Secret Name | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | **Yes** | Supabase **Session Pooler** URI (`postgres://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres`). Required because GitHub Actions runners are IPv4-only. |
+| `DATABASE_URL` | **Yes** | Supabase **Session Pooler** URI: `postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres`. Copy the whole string from **Connect → Connection string → Session pooler**; `<pooler-host>` is `aws-<index>-<region>.pooler.supabase.com` and **cannot be composed from the region or project ref**. Required because GitHub Actions runners are IPv4-only. |
+| `DATABASE_URL_DIRECT` | Optional | Direct connection (`postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres`). Only used as a fallback when `DATABASE_URL` is empty. The direct endpoint is IPv6-only on the Free plan and is rejected on GitHub Actions unless `VORTEX_DB_ALLOW_DIRECT_CONNECTION=true`. |
 | `VORTEX_SECRET_KEY` | **Yes** | 32-byte key (`node scripts/generate-secrets.mjs`) used for AES-256-GCM encryption of `TWELVEDATA_API_KEY` at rest in `provider_keys`. |
 | `TWELVEDATA_API_KEY` | **Yes** (for live data) | Your Twelve Data Free API key. Automatically encrypted and upserted as `twelvedata-primary` during job runs. |
 | `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot token from `@BotFather` (required only when `VORTEX_TELEGRAM_ENABLED=true`). |
@@ -50,6 +51,7 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 
 | Variable Name | Recommended Value | Description |
 |---|---|---|
+| `SUPABASE_PROJECT_REF` | `nohewrljcqimotoaemyg` | Public project identifier (not a secret). The diagnostic verifies that the Session Pooler username `postgres.<ref>` belongs to this project. |
 | `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` | Supabase project URL for the GitHub Pages dashboard to read `public_*` views. |
 | `VITE_SUPABASE_ANON_KEY` | `eyJ...` or `sb_publishable_...` | Supabase **anon / public** key only (never `service_role`). Has `SELECT` access only to `public_*` views. |
 | `VORTEX_PAIRS` | `EUR/USD,GBP/USD` | Comma-separated pair list (keep at 2–3 pairs on Twelve Data Free). |
@@ -61,14 +63,20 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 ## 3. Step-by-Step Deployment Checklist
 
 1. **Prepare Supabase Free database (preserving existing data)**
-   - In your Supabase project, go to **Connect → Connection String → URI → Session pooler** (port `5432`, IPv4 compatible) and copy the connection string as `DATABASE_URL`.
+   - In your Supabase project, go to **Connect → Connection String → URI → Session pooler** (port `5432`, IPv4 compatible) and copy the **entire** connection string as `DATABASE_URL`.
+     - Format: `postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres`
+     - `<pooler-host>` is `aws-<index>-<region>.pooler.supabase.com`. Copy it from the dashboard — the `aws-0`/`aws-1` index and the region cannot be derived from the project ref.
+     - The username must be `postgres.<project-ref>`; plain `postgres` only works on the direct host.
+     - Keep port `5432` (session mode). Port `6543` is the transaction pooler and is rejected: VORTEX SI uses session-level advisory locks and multi-statement transactions.
+   - `DATABASE_URL_DIRECT` is optional. It is only consulted when `DATABASE_URL` is empty, and the Free-plan direct host `db.<project-ref>.supabase.co` is IPv6-only, so it does not work on GitHub Actions.
    - Never run `supabase db reset` on an existing database.
-   - To inspect migration status locally before running workflows:
+   - Inspect the configuration read-only before running workflows (no migrations are applied, no tables are created):
      ```bash
-     DATABASE_URL="postgres://..." npm run migrate:status
-     DATABASE_URL="postgres://..." npm run migrate
+     DATABASE_URL="postgresql://postgres.<ref>:<password>@<pooler-host>:5432/postgres" npm run db:diagnose
+     DATABASE_URL="postgresql://postgres.<ref>:<password>@<pooler-host>:5432/postgres" npm run migrate:status
      ```
-     (Both GitHub Actions workflows also run `npm run migrate:status` followed by `npm run migrate` automatically.)
+     `npm run migrate` is the only command that applies migrations. The diagnostic and `migrate:status` are strictly read-only.
+   - The GitHub Actions diagnostic workflow (`.github/workflows/database-diagnostic.yml`) runs the same read-only check. Both scheduled workflows run `npm run migrate:status` followed by `npm run migrate` automatically during normal operation.
 
 2. **Generate `VORTEX_SECRET_KEY`**
    ```bash
@@ -86,3 +94,59 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 5. **Trigger and verify workflows**
    - Open **Actions → Scheduled Pipeline Jobs** and click **Run workflow** (`job: cycle`) to verify database migration status, Twelve Data key encryption, candle ingestion, and health reporting.
    - Open **Actions → Deploy dashboard** and click **Run workflow** to build, scan (`npm run guard:bundle`), and publish the dashboard to GitHub Pages.
+
+
+---
+
+## 4. Troubleshooting the database connection
+
+### `Database unreachable: getaddrinfo EAI_AGAIN base`
+
+`base` is not a Supabase host. It is the internal placeholder that
+`pg-connection-string` uses as the base URL for **relative** input
+(`new URL(str, 'postgres://base')`). Any value that is not an absolute URI —
+empty, a bare word, a quoted string, a `${...}`/`[YOUR-PASSWORD]` placeholder,
+or a URI missing its `postgresql://` scheme — resolves to `base`, so the real
+configuration problem is hidden.
+
+VORTEX SI now validates the URI before `pg` sees it and fails closed with an
+actionable message naming the offending variable. It never prints the value or
+the password. Run:
+
+```bash
+npm run db:diagnose -- --config-only
+```
+
+Typical causes and fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `missing-scheme` | The secret does not start with `postgresql://` | Re-copy the full Session Pooler URI |
+| `dummy-host` | The host is literally `base` | Replace the secret with the real pooler URI |
+| `placeholder` | `[YOUR-PASSWORD]`, `<pooler-host>`, `${DATABASE_URL}` still present | Replace every placeholder; do not wrap the URI in quotes |
+| `pooler-user` | The username is plain `postgres` on the pooler, or `postgres.<ref>` on the direct host | Use `postgres.<project-ref>` for the Session Pooler |
+| `project-url` | The Supabase REST URL (`https://<ref>.supabase.co`) was used as a database URL | Use the Session Pooler host instead |
+| `transaction-pooler` | Port `6543` and `VORTEX_DB_STRICT_POOLER_PORT=true` | Use port `5432` (Session Pooler), or unset strict mode so the worker corrects the shared-pooler port |
+| `direct-ipv6` | `db.<ref>.supabase.co` on GitHub Actions | Use the Session Pooler; the runner has no IPv6 |
+
+`DATABASE_URL` (Session Pooler) is authoritative. `DATABASE_URL_DIRECT` is only
+a fallback when `DATABASE_URL` is unset; an invalid direct secret can no longer
+override a working pooler secret. An invalid `DATABASE_URL` is never masked by
+a valid direct secret — fix the primary secret.
+
+If a Supabase shared-pooler URI uses port `6543` (transaction mode), the resolver
+corrects it to port `5432` (session mode) on the same host. That is deterministic
+(the shared host serves both modes) and preserves the existing username, password
+and database, so no secret has to be re-entered. The correction is reported as a
+warning and in `npm run db:diagnose`'s output. Set
+`VORTEX_DB_STRICT_POOLER_PORT=true` to fail instead of correcting; either way,
+updating the secret to the Session Pooler string from the dashboard is
+recommended.
+
+### Verification is read-only
+
+`npm run db:diagnose` and `npm run migrate:status` never create
+`schema_migrations`, apply a migration, alter data, or change RLS/policies.
+They only run `select 1`, `to_regclass(...)` and read
+`schema_migrations` when it already exists. `npm run migrate -- --dry-run`
+also writes nothing.

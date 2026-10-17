@@ -1,10 +1,28 @@
 name: Read-only database diagnostic
 
+# Read-only connectivity and migration-status check.
+#
+# Runs only on demand. It never applies a migration, never creates a table and
+# never changes data or security policies:
+#   - `db:diagnose` validates the configured URI before pg sees it (a relative
+#     or placeholder value would otherwise be parsed against pg-connection-string's
+#     internal `postgres://base`, producing `getaddrinfo EAI_AGAIN base`);
+#   - DNS and a `select 1` probe confirm reachability;
+#   - `status` uses `to_regclass` and reports the migration history without
+#     creating `schema_migrations`.
+#
+# Secrets (DATABASE_URL, DATABASE_URL_DIRECT) and the public project ref are
+# mapped as environment variables. Nothing prints their values: the diagnostic
+# only prints a parsed host/port/database/user summary.
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: database-diagnostic
+  cancel-in-progress: false
 
 jobs:
   database-check:
@@ -13,6 +31,10 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      # Public project identifier (not a secret). Used to verify that the
+      # Session Pooler username belongs to this project. Override with a
+      # repository variable if the project is ever moved.
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'nohewrljcqimotoaemyg' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,10 +42,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Check connection and migration status (no migrations applied)
+      - name: Validate configuration, connection and migration status (read-only)
         run: |
           if [ -z "$DATABASE_URL" ] && [ -z "$DATABASE_URL_DIRECT" ]; then
             echo "::error::Neither DATABASE_URL nor DATABASE_URL_DIRECT is configured."
+            echo "Set DATABASE_URL to the Supabase Session Pooler URI (Dashboard -> Connect -> Session pooler)."
             exit 1
           fi
-          npm run migrate:status
+          # --require-configured turns a missing secret into a hard failure.
+          # The diagnostic performs no writes: no migrations, no DDL, no data changes.
+          npm run db:diagnose -- --read-only --require-configured

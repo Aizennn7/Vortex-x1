@@ -638,7 +638,7 @@ async function adminStatusRoute(ctx: RouteContext): Promise<unknown> {
      * read them (`adminToken`/`secretKey` would be masked to "[redacted]").
      */
     environment: {
-      databaseUrl: runtime.config.databaseUrl.length > 0,
+      databaseUrl: runtime.config.databaseUrl.length > 0 || runtime.config.databaseUrlDirect.length > 0,
       adminPlane: runtime.config.adminToken.length > 0,
       encryptionKey: runtime.config.secretKey.length > 0,
       telegramDelivery: runtime.config.telegramBotToken.length > 0,

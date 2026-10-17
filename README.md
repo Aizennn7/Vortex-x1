@@ -115,12 +115,42 @@ Twelve Data's Free plan provides **8 requests/minute** and **800 requests/day** 
 Migrations (`packages/db/migrations/0001_*.sql` through `0007_*.sql`) are strictly forward-only and tracked by SHA-256 checksum in `schema_migrations`:
 
 ```bash
-npm run migrate:status   # Inspect applied vs pending migrations and verify checksums
+npm run db:diagnose      # Read-only: validate URI, DNS, connection and migration status
+npm run migrate:status   # Read-only: applied vs pending + checksum drift (never creates tables)
 npm run migrate          # Apply pending migrations in a transaction (never drops data)
+npm run migrate -- --dry-run  # Show what would be applied; writes nothing
 ```
+
+### Database connection (Supabase Session Pooler)
+
+`DATABASE_URL` must be the Supabase **Session Pooler** URI:
+
+```
+postgresql://postgres.<project-ref>:<password>@<pooler-host>:5432/postgres
+```
+
+- `<pooler-host>` is `aws-<index>-<region>.pooler.supabase.com`. Copy it from
+  **Connect → Connection string → Session pooler** — the index and region cannot
+  be derived from the project ref.
+- The username is `postgres.<project-ref>` (plain `postgres` only works on the
+  direct host). Port `5432` is session mode; port `6543` (transaction pooler) is
+  rejected because the worker uses session-level advisory locks and
+  multi-statement transactions.
+- The Free-plan direct endpoint (`db.<project-ref>.supabase.co`) is IPv6-only
+  and is rejected on GitHub Actions (`direct-ipv6`) unless
+  `VORTEX_DB_ALLOW_DIRECT_CONNECTION=true` and the runner has IPv6.
+- `DATABASE_URL` is authoritative. `DATABASE_URL_DIRECT` is only a fallback when
+  `DATABASE_URL` is empty; an invalid optional secret can no longer override a
+  working pooler secret. Values are validated before `pg` sees them, so a
+  relative/empty/placeholder value fails with a precise configuration error
+  instead of `getaddrinfo EAI_AGAIN base` (pg-connection-string's internal
+  `postgres://base` fallback).
+- `npm run db:diagnose` and `npm run migrate:status` never apply migrations,
+  create tables, or change data/policies.
 
 - Never run `supabase db reset` against an existing database.
 - Both `.github/workflows/vortex-jobs.yml` and `.github/workflows/vortex-learning.yml` run `npm run migrate:status` before `npm run migrate`.
+- `.github/workflows/database-diagnostic.yml` is a manual, strictly read-only check.
 
 ---
 
