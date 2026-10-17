@@ -348,6 +348,43 @@ function Dashboard() {
         {healthWarning ? <StaleNotice message={healthWarning.message} since={health.refreshedAt ?? summary.refreshedAt} /> : null}
       </div>
 
+      <nav className="workspace-nav" aria-label="Workspace sections">
+        <a href="#overview">Overview</a><a href="#vip">VIP</a><a href="#sessions">Session list</a><a href="#signals">Signals</a><a href="#operations">Operations</a>
+      </nav>
+
+      <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
+        <div className="hero-copy">
+          <p className="eyebrow"><span className="status-orb" /> MARKET RESEARCH WORKSPACE</p>
+          <h2 id="hero-title">Read the market.<br /><em>Move with intention.</em></h2>
+          <p className="hero-description">A quieter view of the signal, the session, and the system behind every decision.</p>
+          <div className="hero-actions"><a className="primary-link" href="#signals">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="#operations">System health</a></div>
+          <p className="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p>
+        </div>
+        <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
+      </section>
+
+      <section className="feature-grid" aria-label="Membership and session tools">
+        <article className="feature-card vip-card" id="vip">
+          <div className="feature-topline"><span className="feature-kicker">MEMBERSHIP</span><span className="feature-mark">✦</span></div>
+          <h2>VIP <em>access</em></h2>
+          <p className="feature-lede">A dedicated space for member access and premium research.</p>
+          <div className="access-state"><span className="state-dot"></span><div><strong>Membership status unavailable</strong><small>No membership or entitlement service is connected.</small></div></div>
+          <ul className="feature-list"><li>Member-only access checks</li><li>Premium research area</li><li>Account-linked benefits</li></ul>
+          <button className="outline-action" type="button" disabled aria-disabled="true" title="A membership backend is not connected">VIP access unavailable</button>
+          <p className="feature-note">No membership, subscription, or benefits are being assumed.</p>
+        </article>
+        <article className="feature-card session-card" id="sessions">
+          <div className="feature-topline"><span className="feature-kicker">MARKET RHYTHM</span><span className="feature-mark">◷</span></div>
+          <h2>Session <em>list</em></h2>
+          <p className="feature-lede">Understand the schedule basis before reading a signal.</p>
+          <div className="session-window"><span className="session-icon">◌</span><div><strong>Fixed UTC schedule</strong><small>Session buckets follow the engine's existing UTC rules.</small></div><span className="utc-chip">UTC</span></div>
+          <div className="session-window"><span className="session-icon">⌁</span><div><strong>Exchange-local conversion</strong><small>Not provided by the current session rules.</small></div><span className="muted-chip">N/A</span></div>
+          <div className="session-window"><span className="session-icon">◷</span><div><strong>Scan cadence</strong><small>Configured engine cadence</small></div><span className="session-value">5 min</span></div>
+          <p className="feature-note">Times are UTC; daylight-saving and exchange-local schedules are not inferred.</p>
+        </article>
+      </section>
+
+      <div className="section-heading" id="operations"><div><p className="eyebrow">SYSTEM TELEMETRY</p><h2>Operations <em>overview</em></h2></div><span className="section-caption">Read-only · measured data only</span></div>
       <div className="grid">
         <Card title="Data source" status={sourceBadge}>
           {health.result.state === 'loading' ? <Loading what="the data source" /> : null}
@@ -727,7 +764,7 @@ function Dashboard() {
         </Card>
       </div>
 
-      <Card title="Recent signals">
+      <div id="signals"><Card title="Recent signals">
         {signals.result.state === 'loading' ? <Loading what="recent signals" /> : null}
         {signals.result.state === 'error' ? <Failure message={signals.result.message} kind={signals.result.kind} /> : null}
         {signals.result.state === 'ready' ? (
@@ -777,6 +814,8 @@ function Dashboard() {
           expectation. Where a model is active its calibrated probability is stored with the signal.
         </p>
       </Card>
+
+      </div>
 
       <footer className="muted">
         VORTEX SI is a research and notification system. Paper figures are simulations. Nothing here is financial advice.
