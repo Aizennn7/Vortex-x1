@@ -264,6 +264,69 @@ function Dashboard() {
   const health = useRelay<HealthPayload>(relay.health, 15_000);
   const summary = useRelay<SummaryPayload>(relay.summary, 15_000);
   const signals = useRelay<{ signals: SignalRow[]; count: number }>(() => relay.signals(25), 30_000);
+  const [signalFormat, setSignalFormat] = useState<'compact' | 'detailed' | 'telegram'>('compact');
+  const [signalActionStatus, setSignalActionStatus] = useState('');
+  const [refreshingSignals, setRefreshingSignals] = useState(false);
+
+  const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
+  const formatSignal = useCallback((signal: SignalRow, format: 'compact' | 'detailed' | 'telegram') => {
+    const time = utcLabel(signal.scheduledEntryAt);
+    const side = signal.decision.toUpperCase();
+    if (format === 'telegram') {
+      return [
+        '🌀 VORTEX SI · PAPER SIGNAL',
+        `${signal.pair} · ${side}`,
+        `Confidence score: ${(signal.confidence * 100).toFixed(0)}% (ranking score, not win probability)`,
+        `Entry: ${time}`,
+        `Strategy: ${signal.strategy}`,
+        `Status: ${signal.status}`,
+        `Outcome: ${signal.outcome ?? 'Pending'}`,
+        'Research only · No orders placed',
+      ].join('\\n');
+    }
+    if (format === 'detailed') {
+      return [
+        'VORTEX SI — SIGNAL DETAILS',
+        `Instrument: ${signal.pair}`,
+        `Decision: ${side}`,
+        `Scheduled entry: ${time}`,
+        `Strategy: ${signal.strategy}`,
+        `Confidence ranking score: ${(signal.confidence * 100).toFixed(0)}%`,
+        `Status: ${signal.status}`,
+        `Outcome: ${signal.outcome ?? 'Unresolved'}`,
+        `Net paper pips: ${signal.realizedPips === null || signal.realizedPips === undefined ? 'Not settled' : signal.realizedPips.toFixed(2)}`,
+        'Note: confidence is not a probability or a win expectation. Research/paper only; no orders are placed.',
+      ].join('\\n');
+    }
+    return `${signal.pair} ${side} · ${(signal.confidence * 100).toFixed(0)} score · ${time} · ${signal.status}`;
+  }, []);
+
+  const refreshPublishedSignals = useCallback(async () => {
+    setRefreshingSignals(true);
+    setSignalActionStatus('Refreshing published signals…');
+    try {
+      await signals.refresh();
+      setSignalActionStatus('Refresh requested. The list shows published signals only; this does not start a new market scan.');
+    } catch {
+      setSignalActionStatus('Could not refresh signals. Check the data-source status above.');
+    } finally {
+      setRefreshingSignals(false);
+    }
+  }, [signals.refresh]);
+
+  const copyLatestSignal = useCallback(async () => {
+    if (!latestSignal) {
+      setSignalActionStatus('No published signal is available to copy yet.');
+      return;
+    }
+    const text = formatSignal(latestSignal, signalFormat);
+    try {
+      await navigator.clipboard.writeText(text);
+      setSignalActionStatus(`Copied the latest signal as ${signalFormat === 'telegram' ? 'Telegram' : signalFormat} format.`);
+    } catch {
+      setSignalActionStatus('Clipboard access was blocked by this browser. Select and copy the formatted preview below.');
+    }
+  }, [formatSignal, latestSignal, signalFormat]);
   // Optional: not every data source can serve breakdowns, so the card is only
   // rendered when the reader exists and answers.
   const performance = useRelay<PerformanceOverview>(() => relayPerformance(), 60_000);
@@ -764,7 +827,41 @@ function Dashboard() {
         </Card>
       </div>
 
-      <div id="signals"><Card title="Recent signals">
+      <div id="signals">
+      <section className="signal-tools" aria-label="Signal actions and output formatting">
+        <div className="signal-tools-copy">
+          <p className="eyebrow">SIGNAL DESK</p>
+          <h2>Signals, ready to share.</h2>
+          <p className="muted">Refresh published results, choose an output style, and copy the newest available signal.</p>
+        </div>
+        <div className="signal-controls">
+          <label className="format-control">
+            <span>Output format</span>
+            <select value={signalFormat} onChange={(event) => setSignalFormat(event.target.value as 'compact' | 'detailed' | 'telegram')}>
+              <option value="compact">Compact</option>
+              <option value="detailed">Detailed</option>
+              <option value="telegram">Telegram</option>
+            </select>
+          </label>
+          <button type="button" onClick={() => void refreshPublishedSignals()} disabled={refreshingSignals}>
+            {refreshingSignals ? 'Refreshing…' : 'Refresh signals'}
+          </button>
+          <button type="button" onClick={() => void copyLatestSignal()} disabled={!latestSignal}>
+            Copy latest signal
+          </button>
+          <a className="signal-workflow-link" href="https://github.com/Aizennn7/Vortex-x1/actions" target="_blank" rel="noreferrer">Run scan in GitHub Actions ↗</a>
+        </div>
+        {latestSignal ? (
+          <div className="signal-preview">
+            <span className="signal-preview-label">OUTPUT PREVIEW · LATEST PUBLISHED</span>
+            <pre>{formatSignal(latestSignal, signalFormat)}</pre>
+          </div>
+        ) : (
+          <p className="muted signal-empty">No published signal is available to preview yet. A refresh checks existing results; use GitHub Actions to request a scan.</p>
+        )}
+        <p className="muted signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
+      </section>
+      <Card title="Recent signals">
         {signals.result.state === 'loading' ? <Loading what="recent signals" /> : null}
         {signals.result.state === 'error' ? <Failure message={signals.result.message} kind={signals.result.kind} /> : null}
         {signals.result.state === 'ready' ? (
