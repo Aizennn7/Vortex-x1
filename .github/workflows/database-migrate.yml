@@ -1,0 +1,72 @@
+name: Apply database migrations (gated)
+
+# Deliberate, manual, audited migration application.
+#
+# Ordering is the safety property:
+#   1. read-only verification (config validation, project-ref check,
+#      `select 1`, migration status) — nothing is written;
+#   2. preview of every pending migration (read-only);
+#   3. explicit operator confirmation via the workflow_dispatch input;
+#   4. apply (each migration is transactional; checksum drift aborts);
+#   5. read-only confirmation of the migration status and the tables.
+#
+# Never scheduled, never automatic, and DATABASE_URL is mapped from
+# repository secrets only. Nothing prints the connection string or
+# the password: only the parsed host/port/database/user summary.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_apply:
+        description: 'Type "yes" to apply pending migrations after read-only verification'
+        required: true
+        default: 'no'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Verify, preview, apply, confirm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      # Public project identifier (not a secret). The diagnostic and
+      # the migration runner both verify the Session Pooler username
+      # and endpoint belong to this project before anything is applied.
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'nohewrljcqimotoaemyg' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --include=dev
+
+      - name: Step 1 — read-only verification (config, connectivity, project ref)
+        run: npm run db:diagnose -- --read-only --require-configured
+
+      - name: Step 2 — preview pending migrations (read-only)
+        run: npm run migrate:status
+
+      - name: Step 3 — require explicit confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_apply }}" != "yes" ]; then
+            echo "::error::confirm_apply was not \"yes\". Nothing was applied."
+            echo "Re-run the workflow and set confirm_apply to yes after reviewing the preview."
+            exit 1
+          fi
+
+      - name: Step 4 — apply pending migrations
+        run: npm run migrate
+
+      - name: Step 5 — confirm schema (read-only)
+        run: |
+          npm run migrate:status
+          npm run db:tables

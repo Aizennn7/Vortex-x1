@@ -24,6 +24,7 @@
     "migrate": "tsx packages/db/src/cli/migrate.ts",
     "migrate:status": "tsx packages/db/src/cli/migrate.ts status",
     "db:diagnose": "tsx packages/db/src/cli/diagnose.ts",
+    "db:tables": "tsx packages/db/src/cli/tables.ts",
     "dev:worker": "tsx watch apps/worker/src/main.ts",
     "dev:web": "npm run dev -w @vortex/web",
     "worker": "tsx apps/worker/src/main.ts",
