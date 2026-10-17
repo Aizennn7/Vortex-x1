@@ -124,16 +124,21 @@ Summary:
 Records carrying `entry_price_late`, `exit_price_early`, `missing_entry_candle`,
 `missing_exit_candle`, `invalid_price`, `too_early` or
 `exit_price_far_from_horizon` are excluded from training labels and counted in
-`dataset.exclusions`.
+`dataset.exclusions`. A record whose `horizon_seconds` differs from the
+configured horizon (or cannot be verified) is counted as `horizonMismatch`:
+a 60-second label and a one-hour label are different targets and are never
+pooled into one dataset.
 
 ---
 
 ## 4. Evaluation methodology
 
-* **Splits are chronological** with an embargo of one full prediction horizon,
-  derived from the stored `horizon_seconds` of the signals
-  (`embargoForRecords`). The embargo is anchored to the last **retained** row of
-  the previous block, so dropping a row can never shorten the gap.
+* **Splits are chronological** with an embargo of one full prediction horizon.
+  The dataset is filtered to `VORTEX_SIGNAL_HORIZON_SECONDS` first, so that
+  configuration is authoritative; a row excluded for a mismatched horizon
+  cannot inflate the window for the rows that remain. The embargo is anchored
+  to the last **retained** row of the previous block, so dropping a row can
+  never shorten the gap.
 * **The candidate is fitted on the training block only.** There is no fallback
   that trains on the full dataset; an undersized training block aborts the run.
 * **Holdout reporting is explicit.** Metrics come from the test block, or from
@@ -141,11 +146,15 @@ Records carrying `entry_price_late`, `exit_price_early`, `missing_entry_candle`,
   size. The chosen set is recorded on the model version.
 * **Walk-forward folds** expand chronologically; each fold reports its training
   cutoff, the validation window, and how many rows the embargo removed.
-* **Baselines**: majority-class metrics are stored next to the candidate so a
-  model that merely learned the base rate is visible as such.
-* Reported metrics: accuracy, balanced view via base rate, precision/recall/F1,
-  confusion matrix, AUC, log loss, Brier score, expected calibration error
-  (10 bins), plus the probability distribution of the holdout.
+* **Baselines**: the no-skill reference is the constant base-rate predictor
+  measured on the same holdout rows. Its log loss is the entropy of the class
+  balance (`ln 2` at 50/50), so it cannot be beaten by simply learning the
+  majority class. It is stored next to the candidate and is **required** for
+  promotion.
+* Reported metrics: accuracy, balanced accuracy, Matthews correlation,
+  precision/recall/F1, confusion matrix, AUC, log loss, Brier score, expected
+  calibration error (10 bins), plus the probability distribution of the
+  holdout.
 
 ### Promotion gates
 
@@ -157,6 +166,8 @@ A candidate is promoted **only** when every check passes
 | `sample_size` | ≥ `VORTEX_TRAIN_MIN_SAMPLES` | enough labelled rows |
 | `evaluation_size` | ≥ 40 holdout rows | no decisions from a handful of rows |
 | `accuracy` | ≥ `VORTEX_MODEL_PROMOTION_MIN_ACCURACY` | better than the floor |
+| `balanced_accuracy` | strictly > 0.5 (chance) | a majority-class-only model cannot pass |
+| `baseline_skill` | holdout log loss **<** base-rate baseline on the same rows | measured skill, not just accuracy; a missing baseline refuses promotion |
 | `auc` | ≥ `VORTEX_MODEL_PROMOTION_MIN_AUC` | ranking quality |
 | `class_balance` | win rate inside 5–95% | rejects degenerate data |
 | `calibration` | ECE ≤ 0.15 | probabilities must be meaningful |
@@ -171,9 +182,14 @@ previous champion is archived rather than deleted.
 ### Guarded retraining
 
 `shouldRetrain` compares the dataset checksum with the previous **successful**
-run. An unchanged dataset is recorded as a `SKIPPED` learning run with a reason
+run. The checksum covers the learning version, the feature-set version, the
+feature names, the prediction horizon and every sample, so a changed target,
+feature representation or row population is never mistaken for "nothing has
+changed". An unchanged dataset is recorded as a `SKIPPED` learning run with a reason
 instead of being refitted, so a nightly schedule costs nothing when no new
-outcomes exist. Failed runs are always retryable.
+outcomes exist. Failed runs are always retryable. The worker derives its
+minimum holdout gate from `DEFAULT_PROMOTION_CRITERIA` (40 rows) and has no
+setting that can lower it.
 
 ### Known evaluation limits
 
@@ -186,6 +202,13 @@ outcomes exist. Failed runs are always retryable.
 * Synthetic fixtures are labelled as synthetic everywhere. The end-to-end
   learning test uses a perfectly separable synthetic pattern to exercise the
   gates; it is **not** evidence of predictive skill.
+* `NO_TRADE` evaluations are not persisted as rows (only the last cycle's
+  blocked-gate summary is kept in the job detail), so coverage and historical
+  abstention rate cannot be measured from the database. Persisting them would
+  be a schema change and is deliberately out of scope for this mission.
+* Promotion metrics are out-of-sample for the evaluated window; they are not a
+  forecast of future profitability and do not establish that a champion will
+  keep its edge.
 
 ---
 
