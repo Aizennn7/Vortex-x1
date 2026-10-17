@@ -460,7 +460,7 @@ function Dashboard() {
 
       <section className="signal-admin-access" aria-label="Signal scan authorization">
         <label htmlFor="signal-github-token">GitHub Actions authorization</label>
-        <input id="signal-admin-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Fine-grained GitHub token (not saved)" />
+        <input id="signal-github-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Fine-grained GitHub token (not saved)" />
         <p className="feature-note">Create a fine-grained token restricted to this repository with Actions: write permission. It is sent directly to api.github.com over HTTPS and is never saved in browser storage or bundled into the site. Anyone who can run scripts in this page could access a token while entered, so use a narrowly scoped, short-lived token.</p>
         <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
