@@ -286,6 +286,8 @@ export async function listLearningRuns(client: SqlClient, limit = 20): Promise<
     status: string;
     datasetChecksum: string | null;
     datasetSize: number | null;
+    datasetFrom: string | null;
+    datasetTo: string | null;
     exclusions: Record<string, unknown>;
     sourceCounts: Record<string, unknown>;
     promotion: Record<string, unknown>;
@@ -299,12 +301,15 @@ export async function listLearningRuns(client: SqlClient, limit = 20): Promise<
     status: string;
     dataset_checksum: string | null;
     dataset_size: number | null;
+    dataset_from: string | Date | null;
+    dataset_to: string | Date | null;
     exclusions: unknown;
     source_counts: unknown;
     promotion: unknown;
     error: string | null;
   }>(
-    `select id, started_at, finished_at, status, dataset_checksum, dataset_size, exclusions, source_counts, promotion, error
+    `select id, started_at, finished_at, status, dataset_checksum, dataset_size,
+            dataset_from, dataset_to, exclusions, source_counts, promotion, error
        from learning_runs order by started_at desc limit $1`,
     [limit],
   );
@@ -315,6 +320,8 @@ export async function listLearningRuns(client: SqlClient, limit = 20): Promise<
     status: r.status,
     datasetChecksum: r.dataset_checksum,
     datasetSize: r.dataset_size === null ? null : int(r.dataset_size),
+    datasetFrom: iso(r.dataset_from),
+    datasetTo: iso(r.dataset_to),
     exclusions: json<Record<string, unknown>>(r.exclusions, {}),
     sourceCounts: json<Record<string, unknown>>(r.source_counts, {}),
     promotion: json<Record<string, unknown>>(r.promotion, {}),

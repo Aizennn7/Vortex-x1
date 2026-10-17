@@ -86,3 +86,14 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 5. **Trigger and verify workflows**
    - Open **Actions → Scheduled Pipeline Jobs** and click **Run workflow** (`job: cycle`) to verify database migration status, Twelve Data key encryption, candle ingestion, and health reporting.
    - Open **Actions → Deploy dashboard** and click **Run workflow** to build, scan (`npm run guard:bundle`), and publish the dashboard to GitHub Pages.
+
+---
+
+## 4. Deployment state (verified 2026-10-17)
+
+Observed from CI on the default branch — both failures are **account/configuration facts, not code defects**:
+
+- **Deploy dashboard** fails at `actions/configure-pages@v5` ("pages not enabled" class of error). GitHub Pages is not yet enabled for this repository: go to **Settings → Pages → Source → GitHub Actions**, then re-run the workflow. No workflow change can fix this from inside the repo.
+- **Nightly Self-Learning** fails at its secrets/migration-status preflight step, consistent with the required repository secrets (`DATABASE_URL`, `VORTEX_SECRET_KEY`, and at least one `TWELVEDATA_API_KEY`) not being present in **Settings → Secrets and variables → Actions**. Add them per §2 and re-run.
+
+Local verification on the unmodified tree and after the finishing pass: typecheck clean, full vitest suite green (428 tests), `guard:bundle` clean, `validate:workflows` clean, and `npm run smoke` completes 13/13 stages on the embedded PGlite + simulated provider. The hosted Supabase database itself was **not** contacted during this audit and remains unverified.
