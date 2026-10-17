@@ -178,3 +178,38 @@ button, .primary-link, .workspace-nav a { -webkit-tap-highlight-color: transpare
     transition-duration: .01ms !important;
   }
 }
+
+
+/* Signal desk: functional controls for published signals and copy-ready formats. */
+.signal-tools {
+  display: grid;
+  grid-template-columns: minmax(220px, .8fr) minmax(300px, 1.2fr);
+  gap: 1.1rem 1.5rem;
+  align-items: start;
+  margin: .5rem 0 1rem;
+  padding: clamp(1rem, 2.5vw, 1.5rem);
+  border: 1px solid rgba(231, 198, 205, .2);
+  border-radius: 20px;
+  background: linear-gradient(145deg, rgba(31, 26, 40, .86), rgba(14, 15, 23, .88));
+  box-shadow: 0 16px 44px rgba(0,0,0,.14), inset 0 1px rgba(255,255,255,.03);
+}
+.signal-tools-copy .eyebrow { margin-bottom: .45rem; }
+.signal-tools-copy h2 { text-transform: none; letter-spacing: -.025em; font-size: 1.3rem; }
+.signal-tools-copy .muted { max-width: 390px; line-height: 1.55; margin-top: .55rem; }
+.signal-controls { display: flex; flex-wrap: wrap; gap: .55rem; align-items: end; }
+.format-control { display: grid; gap: .35rem; color: var(--muted); font-size: .72rem; min-width: 130px; }
+.format-control select { min-height: 40px; padding: .55rem 2rem .55rem .75rem; color: var(--text); background: rgba(255,255,255,.045); border: 1px solid var(--panel-edge); border-radius: 12px; font: inherit; }
+.format-control option { background: #171722; color: var(--text); }
+.signal-controls button { min-height: 40px; padding: .55rem .8rem; border-radius: 12px; font-size: .76rem; }
+.signal-workflow-link { color: #e5b9b9; font-size: .75rem; padding: .6rem .25rem; text-decoration: none; }
+.signal-workflow-link:hover { text-decoration: underline; }
+.signal-preview { grid-column: 1 / -1; min-width: 0; padding: .9rem 1rem; border: 1px solid rgba(231,198,205,.12); border-radius: 13px; background: rgba(0,0,0,.18); }
+.signal-preview-label { color: #c99ca5; font-size: .62rem; letter-spacing: .14em; font-weight: 750; }
+.signal-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .65rem 0 0; color: #eee3e6; font: .8rem/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.signal-empty, .signal-action-status { grid-column: 1 / -1; line-height: 1.5; }
+.signal-action-status:empty { display: none; }
+@media (max-width: 760px) {
+  .signal-tools { grid-template-columns: minmax(0,1fr); }
+  .signal-controls { align-items: stretch; }
+  .signal-controls > * { max-width: 100%; }
+}
