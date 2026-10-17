@@ -167,6 +167,13 @@ export interface ParseDatabaseUrlOptions {
   allowDirect?: boolean;
   /** Allow the transaction pooler (not recommended: no session state). */
   allowTransactionPooler?: boolean;
+  /**
+   * Fail instead of correcting a Supabase transaction-pooler port (6543) to
+   * the session-pooler port (5432) on the same shared host. The correction is
+   * safe and deterministic, but it changes the configured port; opt out with
+   * VORTEX_DB_STRICT_POOLER_PORT=true.
+   */
+  strictPoolerPort?: boolean;
 }
 
 /**
@@ -183,6 +190,7 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
     options.allowDirect ??
     (boolish(env.VORTEX_DB_ALLOW_DIRECT_CONNECTION) || boolish(env.ALLOW_DIRECT_DB_CONNECTION));
   const allowTransactionPooler = options.allowTransactionPooler ?? false;
+  const strictPoolerPort = options.strictPoolerPort ?? boolish(env.VORTEX_DB_STRICT_POOLER_PORT);
 
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     throw new DatabaseConfigError(
@@ -333,6 +341,7 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
   let kind: DatabaseEndpointKind = local ? 'localhost' : 'other';
   let projectRef: string | null = null;
   let poolerUserRef: string | null = null;
+  let effectivePort = port;
 
   if (SUPABASE_POOLER_HOST.test(host)) {
     if (!SUPABASE_POOLER_HOST_STRICT.test(host)) {
@@ -364,15 +373,43 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
     }
     poolerUserRef = match[1]!.toLowerCase();
     projectRef = poolerUserRef;
-    kind = port === 6543 ? 'transaction-pooler' : 'session-pooler';
-    if (kind === 'transaction-pooler' && purpose !== 'diagnostic' && !allowTransactionPooler) {
-      throw new DatabaseConfigError(
-        'transaction-pooler',
-        variable,
-        `${variable} points at the transaction pooler (port 6543). VORTEX SI uses session-level ` +
-          'advisory locks and multi-statement transactions, so it must use the Session Pooler on port 5432. ' +
-          'In the Supabase dashboard choose Connect → Session pooler.',
-      );
+    if (port === 6543) {
+      if (strictPoolerPort) {
+        throw new DatabaseConfigError(
+          'transaction-pooler',
+          variable,
+          `${variable} points at the transaction pooler (port 6543). VORTEX SI uses session-level ` +
+            'advisory locks and multi-statement transactions, so it must use the Session Pooler on port 5432. ' +
+            'In the Supabase dashboard choose Connect → Session pooler, or unset VORTEX_DB_STRICT_POOLER_PORT ' +
+            'to let the worker correct the shared-pooler port automatically.',
+        );
+      }
+      if (!allowTransactionPooler) {
+        // The shared Supabase pooler serves session mode on 5432 and transaction
+        // mode on 6543 on the SAME host. Correcting the port keeps the existing
+        // secret (username/password/host) intact and produces the endpoint this
+        // application requires. The note is surfaced as a warning everywhere.
+        effectivePort = 5432;
+        kind = 'session-pooler';
+        notes.push(
+          'Configured port 6543 (transaction pooler) was corrected to 5432 (session pooler) ' +
+            'on the same Supabase pooler host; VORTEX SI requires session mode. Update the secret to the ' +
+            'Session pooler string (port 5432) when convenient, or set VORTEX_DB_STRICT_POOLER_PORT=true ' +
+            'to fail instead of correcting.',
+        );
+      } else {
+        kind = 'transaction-pooler';
+        if (purpose !== 'diagnostic') {
+          throw new DatabaseConfigError(
+            'transaction-pooler',
+            variable,
+            `${variable} points at the transaction pooler (port 6543), which is not supported. ` +
+              'Use the Session Pooler on port 5432.',
+          );
+        }
+      }
+    } else {
+      kind = 'session-pooler';
     }
   } else if (SUPABASE_DIRECT_HOST.test(host)) {
     projectRef = SUPABASE_DIRECT_HOST.exec(host)![1]!.toLowerCase();
@@ -447,7 +484,7 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
         kind,
         scheme: scheme as 'postgres' | 'postgresql',
         host,
-        port,
+        port: effectivePort,
         database,
         user,
         ssl,
@@ -458,7 +495,7 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
     toPgConfig() {
       const config: Pick<PoolConfig, 'host' | 'port' | 'user' | 'password' | 'database' | 'ssl'> = {
         host,
-        port,
+        port: effectivePort,
         database,
         user: user || undefined,
         password: password || undefined,
@@ -480,6 +517,7 @@ export interface ResolveDatabaseOptions {
   purpose?: 'runtime' | 'migration' | 'diagnostic';
   allowDirect?: boolean;
   allowTransactionPooler?: boolean;
+  strictPoolerPort?: boolean;
 }
 
 export interface ResolvedDatabase {
@@ -506,6 +544,7 @@ export function resolveDatabaseConnection(options: ResolveDatabaseOptions = {}):
   const purpose = options.purpose ?? 'runtime';
   const allowDirect = options.allowDirect ?? boolish(env.VORTEX_DB_ALLOW_DIRECT_CONNECTION);
   const allowTransactionPooler = options.allowTransactionPooler ?? false;
+  const strictPoolerPort = options.strictPoolerPort ?? boolish(env.VORTEX_DB_STRICT_POOLER_PORT);
   const warnings: string[] = [];
 
   const primary = (env.DATABASE_URL ?? '').trim();
@@ -518,7 +557,10 @@ export function resolveDatabaseConnection(options: ResolveDatabaseOptions = {}):
       purpose,
       allowDirect,
       allowTransactionPooler,
+      strictPoolerPort,
     });
+
+    for (const note of target.notes) warnings.push(`${target.source}: ${note}`);
 
     if (direct.length > 0) {
       try {
@@ -528,6 +570,7 @@ export function resolveDatabaseConnection(options: ResolveDatabaseOptions = {}):
           purpose: 'diagnostic',
           allowDirect: true,
           allowTransactionPooler: true,
+          strictPoolerPort: false,
         });
         warnings.push(
           'DATABASE_URL_DIRECT is configured but ignored: DATABASE_URL (Session Pooler) is authoritative. ' +
@@ -551,7 +594,9 @@ export function resolveDatabaseConnection(options: ResolveDatabaseOptions = {}):
       purpose,
       allowDirect,
       allowTransactionPooler,
+      strictPoolerPort,
     });
+    for (const note of target.notes) warnings.push(`${target.source}: ${note}`);
     warnings.push(
       'DATABASE_URL is not configured; using the optional DATABASE_URL_DIRECT fallback. ' +
         'GitHub Actions runners are IPv4-only, so the Supabase direct endpoint cannot be reached there — ' +

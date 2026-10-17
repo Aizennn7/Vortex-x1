@@ -107,8 +107,15 @@ async function checkDns(target: DatabaseTarget): Promise<{ ok: boolean; ipv4: nu
 
 async function main(): Promise<void> {
   line('VORTEX SI — read-only database diagnostic');
+  const hasPrimary = Boolean((process.env.DATABASE_URL ?? '').trim());
+  const hasDirect = Boolean((process.env.DATABASE_URL_DIRECT ?? '').trim());
   line(presence('DATABASE_URL', process.env.DATABASE_URL));
   line(presence('DATABASE_URL_DIRECT', process.env.DATABASE_URL_DIRECT));
+  annotate(
+    'notice',
+    'Database env',
+    `DATABASE_URL=${hasPrimary ? 'set' : 'missing'}; DATABASE_URL_DIRECT=${hasDirect ? 'set' : 'missing'}`,
+  );
 
   let resolved;
   try {
@@ -141,6 +148,7 @@ async function main(): Promise<void> {
   }
 
   line(`configuration: OK — ${describe(target)}`);
+  annotate('notice', 'Database configuration', describe(target));
   for (const note of target.notes) line(`note: ${note}`);
 
   if (target.kind === 'transaction-pooler' || target.kind === 'dedicated-pooler') {
@@ -151,7 +159,11 @@ async function main(): Promise<void> {
         'and multi-statement transactions.',
     );
     line('No connection was attempted. Nothing was created, applied or changed.');
-    annotate('error', 'Database configuration', `unsupported endpoint ${target.kind}; use Session Pooler port 5432`);
+    annotate(
+      'error',
+      'Database configuration',
+      `${target.source}: unsupported endpoint ${target.kind} (port ${target.port}); use Session Pooler port 5432`,
+    );
     process.exit(2);
   }
 

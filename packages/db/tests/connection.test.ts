@@ -122,11 +122,26 @@ describe('database connection-string validation', () => {
     );
   });
 
-  it('rejects the transaction pooler for runtime/migration work', () => {
+  it('corrects the shared transaction-pooler port to Session Pooler port 5432', () => {
     const transaction = POOLER.replace(':5432/', ':6543/');
-    expectConfigError(() => parseDatabaseUrl(transaction, { env: {}, purpose: 'migration' }), 'transaction-pooler');
-    const diagnostic = parseDatabaseUrl(transaction, { env: {}, purpose: 'diagnostic' });
-    expect(diagnostic.kind).toBe('transaction-pooler');
+    const corrected = parseDatabaseUrl(transaction, { env: {}, purpose: 'migration' });
+    expect(corrected.kind).toBe('session-pooler');
+    // The host, user and password are preserved; only the port changes.
+    expect(corrected.host).toBe('aws-1-ap-south-1.pooler.supabase.com');
+    expect(corrected.toPgConfig().port).toBe(5432);
+    expect(corrected.toPgConfig().password).toBe(PASSWORD);
+    expect(corrected.notes.join(' ')).toMatch(/6543/);
+    expect(corrected.notes.join(' ')).toMatch(/session/i);
+
+    // Strict mode fails instead of correcting.
+    expectConfigError(
+      () => parseDatabaseUrl(transaction, { env: { VORTEX_DB_STRICT_POOLER_PORT: 'true' }, purpose: 'migration' }),
+      'transaction-pooler',
+    );
+    // Non-Supabase endpoints are never rewritten.
+    const other = parseDatabaseUrl('postgresql://user:pw@db.example.com:6543/postgres', { env: {}, purpose: 'migration' });
+    expect(other.kind).toBe('other');
+    expect(other.port).toBe(6543);
   });
 
   it('rejects the IPv6-only direct endpoint on GitHub Actions unless explicitly allowed', () => {
@@ -194,6 +209,15 @@ describe('database connection resolution', () => {
     expect(resolved.target?.kind).toBe('session-pooler');
     expect(resolved.warnings.join(' ')).toContain('DATABASE_URL_DIRECT');
     expect(resolved.warnings.join(' ')).toContain('base');
+  });
+
+  it('surfaces the transaction-pooler port correction as a warning', () => {
+    const resolved = resolveDatabaseConnection({
+      env: { DATABASE_URL: POOLER.replace(':5432/', ':6543/') },
+      purpose: 'migration',
+    });
+    expect(resolved.target?.toPgConfig().port).toBe(5432);
+    expect(resolved.warnings.join(' ')).toMatch(/6543/);
   });
 
   it('reports a valid but unused DATABASE_URL_DIRECT as ignored', () => {

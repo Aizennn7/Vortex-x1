@@ -126,13 +126,22 @@ Typical causes and fixes:
 | `placeholder` | `[YOUR-PASSWORD]`, `<pooler-host>`, `${DATABASE_URL}` still present | Replace every placeholder; do not wrap the URI in quotes |
 | `pooler-user` | The username is plain `postgres` on the pooler, or `postgres.<ref>` on the direct host | Use `postgres.<project-ref>` for the Session Pooler |
 | `project-url` | The Supabase REST URL (`https://<ref>.supabase.co`) was used as a database URL | Use the Session Pooler host instead |
-| `transaction-pooler` | Port `6543` | Use port `5432` (Session Pooler) |
+| `transaction-pooler` | Port `6543` and `VORTEX_DB_STRICT_POOLER_PORT=true` | Use port `5432` (Session Pooler), or unset strict mode so the worker corrects the shared-pooler port |
 | `direct-ipv6` | `db.<ref>.supabase.co` on GitHub Actions | Use the Session Pooler; the runner has no IPv6 |
 
 `DATABASE_URL` (Session Pooler) is authoritative. `DATABASE_URL_DIRECT` is only
 a fallback when `DATABASE_URL` is unset; an invalid direct secret can no longer
 override a working pooler secret. An invalid `DATABASE_URL` is never masked by
 a valid direct secret — fix the primary secret.
+
+If a Supabase shared-pooler URI uses port `6543` (transaction mode), the resolver
+corrects it to port `5432` (session mode) on the same host. That is deterministic
+(the shared host serves both modes) and preserves the existing username, password
+and database, so no secret has to be re-entered. The correction is reported as a
+warning and in `npm run db:diagnose`'s output. Set
+`VORTEX_DB_STRICT_POOLER_PORT=true` to fail instead of correcting; either way,
+updating the secret to the Session Pooler string from the dashboard is
+recommended.
 
 ### Verification is read-only
 
