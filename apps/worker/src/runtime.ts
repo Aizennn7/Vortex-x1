@@ -19,9 +19,11 @@ import {
   type VortexConfig,
 } from '@vortex/core';
 import {
-  createPostgresClient,
+  createPostgresClientFromTarget,
+  resolveDatabaseConnection,
   type DatabaseHandle,
   type PostgresClient,
+  type ResolvedDatabase,
   type SqlClient,
   type StoredKey,
 } from '@vortex/db';
@@ -132,6 +134,9 @@ export class WorkerRuntime {
       db = await openPostgres(config);
     }
 
+    for (const warning of db.warnings ?? []) {
+      logger.warn(warning, { component: 'db' });
+    }
     const runtime = new WorkerRuntime({ config, issues, logger, provider, db, manual: options.manual ?? false });
     if (options.db || config.useEmbeddedDb) {
       // Injected/embedded databases are migrated on the spot so tests and local
@@ -205,16 +210,52 @@ export class WorkerRuntime {
 }
 
 async function openPostgres(config: VortexConfig): Promise<DatabaseHandle> {
-  if (!config.databaseUrl) {
-    return { client: null as unknown as SqlClient, kind: 'postgres', connected: false, detail: 'DATABASE_URL not configured' };
+  let resolved: ResolvedDatabase;
+  try {
+    resolved = resolveDatabaseConnection({
+      purpose: 'runtime',
+      env: {
+        DATABASE_URL: config.databaseUrl,
+        DATABASE_URL_DIRECT: config.databaseUrlDirect,
+        GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+        SUPABASE_PROJECT_REF: process.env.SUPABASE_PROJECT_REF,
+        VORTEX_DB_ALLOW_DIRECT_CONNECTION: process.env.VORTEX_DB_ALLOW_DIRECT_CONNECTION,
+      },
+    });
+  } catch (error) {
+    if (config.dbRequired) throw error;
+    return {
+      client: null as unknown as SqlClient,
+      kind: 'postgres',
+      connected: false,
+      detail: (error as Error).message,
+      warnings: [],
+    };
   }
-  const client: PostgresClient = createPostgresClient(config.databaseUrl, {
-    applicationName: `vortex-si-worker`,
+
+  if (!resolved.target) {
+    return {
+      client: null as unknown as SqlClient,
+      kind: 'postgres',
+      connected: false,
+      detail: 'DATABASE_URL not configured',
+      warnings: resolved.warnings,
+    };
+  }
+
+  const client: PostgresClient = createPostgresClientFromTarget(resolved.target, {
+    applicationName: 'vortex-si-worker',
     max: 5,
   });
   const ping = await client.ping();
   if (!ping.ok && config.dbRequired) {
     throw new Error(`Database unreachable: ${ping.detail}`);
   }
-  return { client, kind: 'postgres', connected: ping.ok, detail: ping.detail };
+  return {
+    client,
+    kind: 'postgres',
+    connected: ping.ok,
+    detail: ping.detail,
+    warnings: resolved.warnings,
+  };
 }

@@ -27,7 +27,7 @@ if (existsSync(join(root, 'render.yaml'))) {
   errors.push('render.yaml still exists at repo root — paid Render hosting must be removed');
 }
 
-const requiredWorkflows = ['ci.yml', 'pages.yml', 'vortex-jobs.yml', 'vortex-learning.yml'];
+const requiredWorkflows = ['ci.yml', 'pages.yml', 'vortex-jobs.yml', 'vortex-learning.yml', 'database-diagnostic.yml'];
 for (const name of requiredWorkflows) {
   if (!existsSync(join(workflowsDir, name))) {
     errors.push(`missing required workflow: .github/workflows/${name}`);
@@ -79,6 +79,19 @@ for (const file of workflowFiles) {
     }
   }
 
+  // Supabase requires TLS. A workflow that disables it is always a mistake.
+  if (/sslmode=disable/i.test(content)) {
+    errors.push(`${file}: disables TLS for a database connection (sslmode=disable)`);
+  }
+
+  // Connection strings must come from Actions secrets, never from literals.
+  for (const key of ['DATABASE_URL', 'DATABASE_URL_DIRECT']) {
+    const match = new RegExp(`^\\s*${key}:\\s*(.*)$`, 'm').exec(content);
+    if (match && !match[1].trim().startsWith('${{ secrets.')) {
+      errors.push(`${file}: ${key} must be mapped from a repository secret`);
+    }
+  }
+
   // Validate cron expressions in scheduled workflows.
   const cronMatches = [...content.matchAll(/cron:\s*['"]([^'"]+)['"]/g)];
   for (const match of cronMatches) {
@@ -126,6 +139,31 @@ const jobsWorkflow = readFileSync(join(workflowsDir, 'vortex-jobs.yml'), 'utf8')
 for (const name of ['TWELVEDATA_API_KEY', 'TWELVEDATA_API_KEY_2', 'TWELVEDATA_API_KEY_3', 'TWELVEDATA_API_KEY_4']) {
   if (!jobsWorkflow.includes(name + ': ${{ secrets.' + name + ' }}')) {
     errors.push(`vortex-jobs.yml: missing Actions secret mapping for ${name}`);
+  }
+}
+
+// The read-only diagnostic must stay read-only and must use the validated
+// connection resolver. `npm run migrate` (apply) must never appear in it.
+const diagnostic = join(workflowsDir, 'database-diagnostic.yml');
+if (existsSync(diagnostic)) {
+  const content = readFileSync(diagnostic, 'utf8');
+  if (!content.includes('npm run db:diagnose')) {
+    errors.push('database-diagnostic.yml: must use the validated "npm run db:diagnose" check');
+  }
+  if (!content.includes('--read-only')) {
+    errors.push('database-diagnostic.yml: must assert --read-only');
+  }
+  if (/npm\s+run\s+migrate(?:\s|$)/m.test(content)) {
+    errors.push('database-diagnostic.yml: must not apply migrations ("npm run migrate")');
+  }
+  if (/\b(?:printenv|env\s*\|)/.test(content)) {
+    errors.push('database-diagnostic.yml: must not dump the environment (secret exposure)');
+  }
+  if (/echo\s+["']?\$(?:DATABASE_URL|DATABASE_URL_DIRECT)/.test(content)) {
+    errors.push('database-diagnostic.yml: must not echo database connection secrets');
+  }
+  if (!content.includes('SUPABASE_PROJECT_REF')) {
+    errors.push('database-diagnostic.yml: must verify the pooler project ref (SUPABASE_PROJECT_REF)');
   }
 }
 

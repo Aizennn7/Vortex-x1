@@ -26,6 +26,24 @@ jobs:
         run: npm run typecheck
       - name: Validate GitHub Actions workflows and migration safety
         run: npm run validate:workflows
+      - name: Validate the database diagnostic without credentials
+        run: npm run db:diagnose -- --config-only
+      - name: Fail closed on a relative database URL (regression: getaddrinfo base)
+        run: |
+          set +e
+          DATABASE_URL=base npm run db:diagnose -- --config-only > diagnostic.log 2>&1
+          status=$?
+          set -e
+          cat diagnostic.log
+          if [ "$status" -ne 2 ]; then
+            echo "::error::Expected the diagnostic to exit 2 for a relative DATABASE_URL, got $status"
+            exit 1
+          fi
+          grep -q "postgres://base" diagnostic.log
+          if grep -qi "EAI_AGAIN" diagnostic.log; then
+            echo "::error::The diagnostic attempted DNS instead of rejecting the value"
+            exit 1
+          fi
       - name: Unit and integration tests (embedded Postgres)
         run: npm test
       - name: Smoke test the full pipeline
