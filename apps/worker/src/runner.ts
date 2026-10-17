@@ -349,7 +349,16 @@ export async function runOneShot(runtime: WorkerRuntime, options: OneShotOptions
         summary.ran.push(jobLabel);
         lastJobRan = jobLabel;
       } else {
-        summary.skipped.push(`${jobLabel}:${outcome.status}`);
+        const reason = outcome.detail?.reason;
+        summary.skipped.push(
+          `${jobLabel}:${outcome.status}${typeof reason === 'string' ? ` (${reason})` : ''}`,
+        );
+        runtime.logger.info('job skipped', {
+          component: 'runner',
+          job: jobLabel,
+          status: outcome.status,
+          ...(outcome.detail ?? {}),
+        });
       }
     }
   } finally {
