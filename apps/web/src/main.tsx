@@ -267,6 +267,8 @@ function Dashboard() {
   const [signalFormat, setSignalFormat] = useState<'compact' | 'detailed' | 'telegram'>('compact');
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
+  const [adminToken, setAdminToken] = useState('');
+  const [startingProfile, setStartingProfile] = useState<'VIP' | 'Session' | null>(null);
 
   const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
   const formatSignal = useCallback((signal: SignalRow, format: 'compact' | 'detailed' | 'telegram') => {
@@ -313,6 +315,36 @@ function Dashboard() {
       setRefreshingSignals(false);
     }
   }, [signals.refresh]);
+
+  const startSignalScan = useCallback(async (profile: 'VIP' | 'Session') => {
+    if (!adminToken.trim()) {
+      setSignalActionStatus('Enter the relay admin token below to authorize a scan. It is kept in this page only and is not saved.');
+      return;
+    }
+    setStartingProfile(profile);
+    setSignalActionStatus('Authorizing ' + profile + ' start and requesting a fresh market scan…');
+    try {
+      const base = RELAY_BASE.replace(/\/$/, '');
+      const response = await fetch(base + '/admin/signals/scan', {
+        method: 'POST',
+        headers: { accept: 'application/json', authorization: 'Bearer ' + adminToken.trim() },
+      });
+      const body = await response.json() as { ok?: boolean; data?: { status?: string; detail?: Record<string, unknown> }; error?: { message?: string } };
+      if (!response.ok || body.ok === false) throw new Error(body.error?.message ?? ('Scan request failed (HTTP ' + response.status + ')'));
+      const detail = body.data?.detail;
+      const published = typeof detail?.published === 'number' ? detail.published : null;
+      setSignalActionStatus(published === null
+        ? profile + ' start accepted by the relay. Check scan status for the outcome.'
+        : published > 0
+          ? profile + ' start completed: ' + published + ' new signal(s) published by the shared scan.'
+          : profile + ' start completed: no new signals qualified. The engine may correctly return NO-TRADE.');
+      await Promise.all([signals.refresh(), summary.refresh()]);
+    } catch (error) {
+      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message + '. Confirm a relay URL is configured, its CORS allows this dashboard, and the admin token is valid.');
+    } finally {
+      setStartingProfile(null);
+    }
+  }, [adminToken, signals.refresh, summary.refresh]);
 
   const copyLatestSignal = useCallback(async () => {
     if (!latestSignal) {
@@ -426,6 +458,13 @@ function Dashboard() {
         <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
       </section>
 
+      <section className="signal-admin-access" aria-label="Signal scan authorization">
+        <label htmlFor="signal-admin-token">Scan authorization token</label>
+        <input id="signal-admin-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Relay admin token (not saved)" />
+        <p className="feature-note">Required to start a scan. Sent only to the configured relay over HTTPS; never put this token in GitHub Pages build variables or source code.</p>
+        <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
+      </section>
+
       <section className="feature-grid" aria-label="Membership and session tools">
         <article className="feature-card vip-card" id="vip">
           <div className="feature-topline"><span className="feature-kicker">MEMBERSHIP</span><span className="feature-mark">✦</span></div>
@@ -433,7 +472,7 @@ function Dashboard() {
           <p className="feature-lede">A dedicated space for member access and premium research.</p>
           <div className="access-state"><span className="state-dot"></span><div><strong>Membership status unavailable</strong><small>No membership or entitlement service is connected.</small></div></div>
           <ul className="feature-list"><li>Member-only access checks</li><li>Premium research area</li><li>Account-linked benefits</li></ul>
-          <button className="outline-action" type="button" disabled aria-disabled="true" title="A membership backend is not connected">VIP access unavailable</button>
+          <button className="outline-action" type="button" onClick={() => void startSignalScan('VIP')} disabled={startingProfile !== null}>{startingProfile === 'VIP' ? 'Starting VIP scan…' : 'VIP Start'}</button>
           <p className="feature-note">No membership, subscription, or benefits are being assumed.</p>
         </article>
         <article className="feature-card session-card" id="sessions">
@@ -443,7 +482,8 @@ function Dashboard() {
           <div className="session-window"><span className="session-icon">◌</span><div><strong>Fixed UTC schedule</strong><small>Session buckets follow the engine's existing UTC rules.</small></div><span className="utc-chip">UTC</span></div>
           <div className="session-window"><span className="session-icon">⌁</span><div><strong>Exchange-local conversion</strong><small>Not provided by the current session rules.</small></div><span className="muted-chip">N/A</span></div>
           <div className="session-window"><span className="session-icon">◷</span><div><strong>Scan cadence</strong><small>Configured engine cadence</small></div><span className="session-value">5 min</span></div>
-          <p className="feature-note">Times are UTC; daylight-saving and exchange-local schedules are not inferred.</p>
+          <button className="outline-action" type="button" onClick={() => void startSignalScan('Session')} disabled={startingProfile !== null}>{startingProfile === 'Session' ? 'Starting session scan…' : 'Session Start'}</button>
+          <p className="feature-note">Starts the same shared market scan; the current engine does not yet have separate VIP/session strategies or delivery destinations. Times are UTC; daylight-saving and exchange-local schedules are not inferred.</p>
         </article>
       </section>
 
