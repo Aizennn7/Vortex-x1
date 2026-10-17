@@ -133,7 +133,10 @@ async function main(): Promise<void> {
     throw error;
   }
 
-  for (const warning of resolved.warnings) line(`warning: ${warning}`);
+  for (const warning of resolved.warnings) {
+    line(`warning: ${warning}`);
+    annotate('warning', 'Database warning', warning);
+  }
 
   const target = resolved.target;
   if (!target) {
