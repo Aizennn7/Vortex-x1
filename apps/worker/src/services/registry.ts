@@ -20,6 +20,8 @@ import { listLearningRuns, listModelVersions, listSignals } from '@vortex/db';
 
 export interface ModelMetricsView {
   accuracy: number | null;
+  /** Mean of per-class recall; 0.5 means chance. */
+  balancedAccuracy: number | null;
   auc: number | null;
   logLoss: number | null;
   brier: number | null;
@@ -78,6 +80,7 @@ export function toModelSummary(versions: ModelVersion[]): ModelSummaryView {
           metrics: metrics
             ? {
                 accuracy: num(metrics.accuracy),
+                balancedAccuracy: num(metrics.balancedAccuracy),
                 auc: num(metrics.auc),
                 logLoss: num(metrics.logLoss),
                 brier: num(metrics.brier),

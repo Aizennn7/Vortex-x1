@@ -19,13 +19,13 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  DEFAULT_PROMOTION_CRITERIA,
   auditDataset,
   baselineMetrics,
   buildDataset,
   chronologicalSplit,
   decidePromotion,
   detectDrift,
-  embargoForRecords,
   evaluate,
   learnStrategyWeights,
   predictLogistic,
@@ -33,6 +33,7 @@ import {
   trainLogistic,
   walkForward,
   type Dataset,
+  type PromotionCriteria,
   type ResolvedRecord,
   type TrainingSample,
 } from '@vortex/core';
@@ -72,7 +73,31 @@ export interface LearningSummary {
 
 /** Bounded by the free-tier runner: a dataset is refit only when it changed. */
 const MIN_TRAIN_SAMPLES = 40;
-const MIN_EVALUATION_SAMPLES = 20;
+/**
+ * Derived from the documented gate, never re-typed locally: a local constant
+ * is how a 40-row holdout requirement quietly became 20. This job has no
+ * setting that can lower the floor.
+ */
+const MIN_EVALUATION_SAMPLES = DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples;
+
+/**
+ * The promotion criteria this worker actually applies. Exported so tests can
+ * prove that no local constant weakens the documented gates.
+ */
+export function learningPromotionCriteria(cfg: {
+  trainMinSamples: number;
+  promotionMinAccuracy: number;
+  promotionMinAuc: number;
+  promotionMaxLogLossRegression: number;
+}): Partial<PromotionCriteria> {
+  return {
+    minSamples: cfg.trainMinSamples,
+    minEvaluationSamples: MIN_EVALUATION_SAMPLES,
+    minAccuracy: cfg.promotionMinAccuracy,
+    minAuc: cfg.promotionMinAuc,
+    maxLogLossRegression: cfg.promotionMaxLogLossRegression,
+  };
+}
 
 export async function runLearningCycle(runtime: WorkerRuntime, now = new Date()): Promise<LearningSummary> {
   const cfg = runtime.config;
@@ -132,15 +157,21 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       runtime.models.invalidate();
     }
 
+    // Labels are only comparable at one horizon: rows recorded against a
+    // different (or unverifiable) horizon are excluded and counted rather than
+    // pooled into a target whose meaning changed.
     const dataset: Dataset = buildDataset(records, {
       checksum: (input) => createHash('sha256').update(input).digest('hex'),
+      expectedHorizonSeconds: cfg.signalHorizonSeconds,
     });
     summary.datasetSize = dataset.samples.length;
     summary.checksum = dataset.checksum;
     summary.exclusions = { ...dataset.exclusions };
 
     const sourceCounts = tallyOutcomes(records);
-    const audit = auditDataset(dataset, cfg.trainMinSamples);
+    // The cycle's own clock drives the future-timestamp check so a replayed
+    // run judges the dataset against the instant it is modelling.
+    const audit = auditDataset(dataset, cfg.trainMinSamples, now.getTime());
     if (!audit.ok) {
       await finishLearningRun(db, {
         id: runId,
@@ -184,10 +215,12 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       return summary;
     }
 
-    // The embargo is one full prediction horizon, taken from the recorded
-    // signals themselves: two rows closer than one horizon share outcome
-    // candles, so a shorter window would leak outcomes across the split.
-    const embargo = embargoForRecords(records, cfg.signalHorizonSeconds);
+    // The embargo is one full prediction horizon: two rows closer than one
+    // horizon share outcome candles, so a shorter window would leak outcomes
+    // across the split. The dataset is filtered to the configured horizon, so
+    // the configuration is authoritative here; an excluded row recorded at a
+    // different horizon must not inflate the window for the rows that remain.
+    const embargo = Math.max(60, Math.ceil(cfg.signalHorizonSeconds));
     summary.embargoSeconds = embargo;
 
     const split = chronologicalSplit(dataset.samples, { train: 0.6, validation: 0.2, test: 0.2 }, embargo);
@@ -280,13 +313,8 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       champion: champion
         ? { metrics: champion.metrics as never, version: champion.version }
         : null,
-      criteria: {
-        minSamples: cfg.trainMinSamples,
-        minEvaluationSamples: MIN_EVALUATION_SAMPLES,
-        minAccuracy: cfg.promotionMinAccuracy,
-        minAuc: cfg.promotionMinAuc,
-        maxLogLossRegression: cfg.promotionMaxLogLossRegression,
-      },
+      baseline: baselines.majority,
+      criteria: learningPromotionCriteria(cfg),
     });
 
     summary.walkForwardAccuracy = folds.map((f) => Number(f.metrics.accuracy.toFixed(4)));

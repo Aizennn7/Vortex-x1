@@ -12,7 +12,13 @@
  *    gates against the current champion. Failure leaves the champion in place.
  */
 
-import { FEATURE_NAMES, fromFeatureArray, toFeatureArray, type FeatureVector } from './features.js';
+import {
+  FEATURE_NAMES,
+  FEATURE_SET_VERSION,
+  fromFeatureArray,
+  toFeatureArray,
+  type FeatureVector,
+} from './features.js';
 import { evaluate, logLoss, sigmoid, type EvaluationMetrics } from './stats.js';
 
 export const LEARNING_VERSION = 'vortex-learning-1.0.0';
@@ -41,6 +47,12 @@ export interface DatasetExclusions {
   invalidFeatures: number;
   duplicate: number;
   ineligibleFlags: number;
+  /**
+   * Rows recorded against a different prediction horizon (or without a usable
+   * one). Mixing horizons would mix label semantics, so they are excluded and
+   * counted rather than silently pooled.
+   */
+  horizonMismatch: number;
 }
 
 export interface TrainingSample {
@@ -107,11 +119,22 @@ export interface BuildDatasetOptions {
   checksum?: (input: string) => string;
   /** Defaults to FEATURE_NAMES length. */
   expectedFeatures?: number;
+  /**
+   * When set, rows whose recorded horizon differs from this value (or cannot
+   * be verified) are excluded as `horizonMismatch`. Callers that know the
+   * configured horizon should always pass it: a 60-second label and a
+   * one-hour label are not the same target.
+   */
+  expectedHorizonSeconds?: number;
 }
 
 export function buildDataset(records: ResolvedRecord[], options: BuildDatasetOptions = {}): Dataset {
   const checksumFn = options.checksum ?? fnv1a64;
   const expected = options.expectedFeatures ?? FEATURE_NAMES.length;
+  const expectedHorizon =
+    typeof options.expectedHorizonSeconds === 'number' && Number.isFinite(options.expectedHorizonSeconds)
+      ? Math.round(options.expectedHorizonSeconds)
+      : null;
   const exclusions: DatasetExclusions = {
     notResolved: 0,
     draw: 0,
@@ -119,6 +142,7 @@ export function buildDataset(records: ResolvedRecord[], options: BuildDatasetOpt
     invalidFeatures: 0,
     duplicate: 0,
     ineligibleFlags: 0,
+    horizonMismatch: 0,
   };
   const seen = new Set<string>();
   const samples: TrainingSample[] = [];
@@ -139,6 +163,15 @@ export function buildDataset(records: ResolvedRecord[], options: BuildDatasetOpt
     if (DISQUALIFYING_FLAGS.some((flag) => (record.outcomeFlags ?? []).includes(flag))) {
       exclusions.ineligibleFlags += 1;
       continue;
+    }
+    if (expectedHorizon !== null) {
+      const horizon = record.horizonSeconds;
+      const usable =
+        typeof horizon === 'number' && Number.isFinite(horizon) && horizon > 0 && Math.round(horizon) === expectedHorizon;
+      if (!usable) {
+        exclusions.horizonMismatch += 1;
+        continue;
+      }
     }
     const features = Array.isArray(record.features) ? record.features : toFeatureArray(record.features as FeatureVector);
     if (features.length !== expected || features.some((f) => typeof f !== 'number' || !Number.isFinite(f))) {
@@ -168,7 +201,11 @@ export function buildDataset(records: ResolvedRecord[], options: BuildDatasetOpt
 
   const checksumPayload = {
     learningVersion: LEARNING_VERSION,
+    featureSetVersion: FEATURE_SET_VERSION,
     featureNames: FEATURE_NAMES,
+    // The target's horizon is part of the dataset identity: identical rows
+    // scored against a different horizon are a different learning problem.
+    horizonSeconds: expectedHorizon,
     samples: samples.map((s) => ({
       id: s.signalId,
       t: s.decidedAt,
@@ -502,6 +539,8 @@ export interface PromotionCriteria {
    */
   minEvaluationSamples: number;
   minAccuracy: number;
+  /** Balanced accuracy must be strictly above this floor (0.5 = chance). */
+  minBalancedAccuracy: number;
   minAuc: number;
   maxLogLossRegression: number;
   /** Maximum expected calibration error allowed on the holdout. */
@@ -516,6 +555,7 @@ export const DEFAULT_PROMOTION_CRITERIA: PromotionCriteria = {
   minSamples: 200,
   minEvaluationSamples: 40,
   minAccuracy: 0.55,
+  minBalancedAccuracy: 0.5,
   minAuc: 0.55,
   maxLogLossRegression: 0.02,
   maxExpectedCalibrationError: 0.15,
@@ -532,6 +572,13 @@ export interface PromotionDecision {
 export function decidePromotion(params: {
   candidate: { metrics: EvaluationMetrics; walkForward: WalkForwardFold[]; trainedSamples: number; version: string };
   champion?: { metrics: EvaluationMetrics; version: string } | null;
+  /**
+   * No-skill reference measured on the SAME holdout rows. Required in
+   * practice: without it, relative skill cannot be verified and promotion is
+   * refused (fail-closed), because a high accuracy can be an artefact of class
+   * balance rather than information.
+   */
+  baseline?: EvaluationMetrics | null;
   criteria?: Partial<PromotionCriteria>;
 }): PromotionDecision {
   const criteria = { ...DEFAULT_PROMOTION_CRITERIA, ...(params.criteria ?? {}) };
@@ -546,7 +593,26 @@ export function decidePromotion(params: {
     `${metrics.samples} out-of-sample rows (min ${criteria.minEvaluationSamples})`,
   );
   add('accuracy', metrics.accuracy >= criteria.minAccuracy, `accuracy ${metrics.accuracy.toFixed(3)} (min ${criteria.minAccuracy})`);
+  add(
+    'balanced_accuracy',
+    metrics.balancedAccuracy > criteria.minBalancedAccuracy,
+    `balanced accuracy ${metrics.balancedAccuracy.toFixed(3)} (must exceed ${criteria.minBalancedAccuracy} = chance)`,
+  );
   add('auc', (metrics.auc ?? 0) >= criteria.minAuc, `AUC ${(metrics.auc ?? 0).toFixed(3)} (min ${criteria.minAuc})`);
+  // Log loss is a proper scoring rule and the base-rate predictor is the
+  // canonical no-skill reference. Requiring a strict improvement on the same
+  // rows stops a model that merely learned the class balance from being
+  // promoted on accuracy alone.
+  if (params.baseline) {
+    add(
+      'baseline_skill',
+      metrics.logLoss < params.baseline.logLoss,
+      `holdout log loss ${metrics.logLoss.toFixed(4)} vs base-rate baseline ${params.baseline.logLoss.toFixed(4)} ` +
+        `on the same ${params.baseline.samples} rows`,
+    );
+  } else {
+    add('baseline_skill', false, 'no baseline was supplied, so relative skill cannot be verified');
+  }
   add(
     'class_balance',
     metrics.baseRate > 0.05 && metrics.baseRate < 0.95,
@@ -599,11 +665,18 @@ export function decidePromotion(params: {
   };
 }
 
-/** Baseline models used to sanity-check a candidate (majority class + random). */
+/**
+ * The no-skill reference: every row receives the observed base rate of the
+ * same holdout. This is the constant that a candidate must beat on a proper
+ * scoring rule; unlike a hard 0/1 majority guess it stays honest when the
+ * classes are balanced (50/50 has log loss ln 2, not ln 1000).
+ *
+ * The field is named `majority` for API compatibility with stored runs.
+ */
 export function baselineMetrics(samples: TrainingSample[]): { majority: EvaluationMetrics; baseRate: number } {
   const labels = samples.map((s) => s.label);
   const baseRate = labels.length === 0 ? 0 : labels.filter((l) => l === 1).length / labels.length;
-  const constant = labels.map(() => (baseRate >= 0.5 ? 0.999 : 0.001));
+  const constant = labels.map(() => Math.min(1 - 1e-6, Math.max(1e-6, baseRate)));
   return { majority: evaluate(labels, constant), baseRate };
 }
 
@@ -700,8 +773,16 @@ export function shouldRetrain(params: {
   return { retrain: true, reason: 'dataset differs from every previous successful run' };
 }
 
-/** Sanity checks that must pass before a dataset is allowed near training. */
-export function auditDataset(dataset: Dataset, minSamples: number): { ok: boolean; issues: string[] } {
+/**
+ * Sanity checks that must pass before a dataset is allowed near training.
+ * `nowMs` is injectable so the future-timestamp check is deterministic in
+ * tests and in replayed runs.
+ */
+export function auditDataset(
+  dataset: Dataset,
+  minSamples: number,
+  nowMs: number = Date.now(),
+): { ok: boolean; issues: string[] } {
   const issues: string[] = [];
   if (dataset.samples.length < minSamples) issues.push(`only ${dataset.samples.length} labelled samples (need ${minSamples})`);
   const duplicates = new Set<string>();
@@ -718,7 +799,7 @@ export function auditDataset(dataset: Dataset, minSamples: number): { ok: boolea
   for (let i = 1; i < times.length; i += 1) {
     if (times[i]! < times[i - 1]!) issues.push('samples are not in chronological order');
   }
-  const firstFuture = times.find((t) => t > Date.now() + 60_000);
+  const firstFuture = times.find((t) => t > nowMs + 60_000);
   if (firstFuture) issues.push('dataset contains samples dated in the future');
   return { ok: issues.length === 0, issues };
 }

@@ -103,6 +103,24 @@ describe('summary denominators', () => {
     expect(summary.accuracyInterval?.upper).toBeGreaterThan(0.5);
   });
 
+  it('keeps unresolved rows out of both sides of the calibration gap', () => {
+    const decisive = [
+      signal({ outcome: 'WIN', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+    ];
+    const withUnresolved = summarize([
+      ...decisive,
+      // A noisy high-confidence row that never produced a verdict must not
+      // move the gap: it belongs to neither numerator nor denominator.
+      signal({ outcome: 'UNRESOLVED', confidence: 0.1, realizedPips: null }),
+    ]);
+    const withoutUnresolved = summarize(decisive);
+    expect(withUnresolved.avgConfidence).toBeCloseTo(withoutUnresolved.avgConfidence ?? 0, 6);
+    expect(withUnresolved.calibrationGap).toBeCloseTo(withoutUnresolved.calibrationGap ?? 0, 6);
+  });
+
   it('measures the confidence calibration gap', () => {
     const summary = summarize([
       signal({ outcome: 'WIN', confidence: 0.9 }),

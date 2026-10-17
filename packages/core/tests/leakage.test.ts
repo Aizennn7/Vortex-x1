@@ -214,6 +214,12 @@ describe('promotion gates', () => {
     ...overrides,
   });
 
+  /** Constant base-rate predictor on the same rows: the no-skill reference. */
+  const baseline = evaluate(
+    Array.from({ length: 400 }, (_, i) => (i % 2) as 0 | 1),
+    new Array(400).fill(0.5),
+  );
+
   const folds = Array.from({ length: 4 }, (_, i) => ({
     fold: i + 1,
     trainSize: 200,
@@ -243,13 +249,14 @@ describe('promotion gates', () => {
   it('accepts a candidate that clears every gate', () => {
     const decision = decidePromotion({
       candidate: { metrics: metrics(), walkForward: folds, trainedSamples: 500, version: 'cand-good' },
+      baseline,
     });
     expect(decision.checks.find((c) => c.name === 'evaluation_size')?.passed).toBe(true);
     expect(decision.promote).toBe(true);
   });
 
-  it('exposes the default minimum holdout size', () => {
-    expect(DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples).toBeGreaterThanOrEqual(20);
+  it('keeps the documented minimum holdout size at 40 or more', () => {
+    expect(DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples).toBeGreaterThanOrEqual(40);
   });
 });
 

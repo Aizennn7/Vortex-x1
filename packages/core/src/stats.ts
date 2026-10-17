@@ -21,6 +21,13 @@ export interface CalibrationBin {
 export interface EvaluationMetrics {
   samples: number;
   accuracy: number;
+  /**
+   * Mean of sensitivity (recall) and specificity. A model that only predicts
+   * the majority class scores 0.5 here, no matter how high its raw accuracy.
+   */
+  balancedAccuracy: number;
+  /** Matthews correlation coefficient in [-1, 1]; 0 means no better than chance. */
+  matthewsCorrelation: number;
   auc: number | null;
   logLoss: number;
   brier: number;
@@ -135,11 +142,24 @@ export function evaluate(labels: number[], probabilities: number[], threshold = 
   const accuracy = n === 0 ? 0 : (confusion.tp + confusion.tn) / n;
   const precision = confusion.tp + confusion.fp === 0 ? 0 : confusion.tp / (confusion.tp + confusion.fp);
   const recall = confusion.tp + confusion.fn === 0 ? 0 : confusion.tp / (confusion.tp + confusion.fn);
+  const specificity = confusion.tn + confusion.fp === 0 ? 0 : confusion.tn / (confusion.tn + confusion.fp);
+  // Balanced accuracy refuses to let a majority-class-only model look useful.
+  const balancedAccuracy = (recall + specificity) / 2;
+  const mccDenominator = Math.sqrt(
+    (confusion.tp + confusion.fp) *
+      (confusion.tp + confusion.fn) *
+      (confusion.tn + confusion.fp) *
+      (confusion.tn + confusion.fn),
+  );
+  const matthewsCorrelation =
+    mccDenominator === 0 ? 0 : (confusion.tp * confusion.tn - confusion.fp * confusion.fn) / mccDenominator;
   const f1 = precision + recall === 0 ? 0 : (2 * precision * recall) / (precision + recall);
   const bins = calibrationBins(labels, probabilities);
   return {
     samples: n,
     accuracy,
+    balancedAccuracy,
+    matthewsCorrelation,
     auc: rocAuc(labels, probabilities),
     logLoss: logLoss(labels, probabilities),
     brier: brierScore(labels, probabilities),

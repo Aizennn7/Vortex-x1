@@ -36,7 +36,11 @@ export interface PerformanceSummary {
   sharpe: number;
   maxDrawdownPips: number;
   avgConfidence: number | null;
-  /** Confidence calibration gap: observed win rate minus mean confidence. */
+  /**
+   * Confidence calibration gap on the decisive cohort: observed win rate minus
+   * the mean confidence of those SAME signals. Unresolved rows are excluded
+   * from both sides so the two numbers describe one population.
+   */
   calibrationGap: number | null;
   avgUnresolvedRate: number;
 }
@@ -66,7 +70,10 @@ export function summarize(signals: Pick<SignalRecord, 'outcome' | 'realizedPips'
     maxDd = Math.max(maxDd, peak - running);
   }
   const accuracy = decisive === 0 ? null : wins.length / decisive;
-  const confidenceValues = signals.filter((s) => typeof s.confidence === 'number').map((s) => s.confidence);
+  const decisiveSignals = signals.filter((s) => s.outcome === 'WIN' || s.outcome === 'LOSS');
+  const confidenceValues = decisiveSignals
+    .filter((s) => typeof s.confidence === 'number')
+    .map((s) => s.confidence);
   const avgConfidence = confidenceValues.length === 0 ? null : mean(confidenceValues);
 
   return {

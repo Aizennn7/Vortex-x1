@@ -354,7 +354,15 @@ describe('model and learning panels', () => {
         dataset_size: 900,
         dataset_from: '2026-01-01T00:00:00.000Z',
         dataset_to: '2026-03-01T00:00:00.000Z',
-        metrics: { accuracy: 0.58, auc: 0.61, logLoss: 0.66, ece: 0.08, samples: 180, baseRate: 0.5 },
+        metrics: {
+          accuracy: 0.58,
+          balancedAccuracy: 0.57,
+          auc: 0.61,
+          logLoss: 0.66,
+          ece: 0.08,
+          samples: 180,
+          baseRate: 0.5,
+        },
         walk_forward: [
           { fold: 1, trainSize: 400, validationSize: 60, metrics: { accuracy: 0.57 } },
           { fold: 2, trainSize: 500, validationSize: 60, metrics: { accuracy: 0.6 } },
@@ -365,6 +373,7 @@ describe('model and learning panels', () => {
     ]);
     expect(summary.champion?.version).toBe('candidate-2');
     expect(summary.champion?.metrics?.auc).toBeCloseTo(0.61, 5);
+    expect(summary.champion?.metrics?.balancedAccuracy).toBeCloseTo(0.57, 5);
     expect(summary.champion?.walkForward.map((f) => f.accuracy)).toEqual([0.57, 0.6]);
   });
 

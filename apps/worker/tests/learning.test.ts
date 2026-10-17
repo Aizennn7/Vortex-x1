@@ -23,7 +23,8 @@ import {
 } from '@vortex/db';
 import { createHarness } from './helpers.js';
 import { listHealth } from '@vortex/db';
-import { runLearningCycle } from '../src/jobs/learning.js';
+import { DEFAULT_PROMOTION_CRITERIA } from '@vortex/core';
+import { learningPromotionCriteria, runLearningCycle } from '../src/jobs/learning.js';
 import { runMaintenance } from '../src/jobs/maintenance.js';
 
 const HORIZON_SECONDS = 300;
@@ -51,11 +52,11 @@ interface Seeded {
 
 async function seedResolved(
   h: Awaited<ReturnType<typeof createHarness>>,
-  params: { count: number; startMs: number; offset?: number; blankFeatures?: boolean },
+  params: { count: number; startMs: number; offset?: number; blankFeatures?: boolean; horizonSeconds?: number },
 ): Promise<Seeded> {
   const ids: string[] = [];
   const decidedAt: string[] = [];
-  const { count, startMs, offset = 0, blankFeatures = false } = params;
+  const { count, startMs, offset = 0, blankFeatures = false, horizonSeconds = HORIZON_SECONDS } = params;
   for (let i = 0; i < count; i += 1) {
     const index = offset + i;
     const entryMs = startMs + index * HOUR_MS;
@@ -73,7 +74,7 @@ async function seedResolved(
       regime: index % 2 === 0 ? 'TREND_UP' : 'RANGE',
       scheduledEntryAt: entryIso,
       publishAt: new Date(entryMs - 60_000).toISOString(),
-      horizonSeconds: HORIZON_SECONDS,
+      horizonSeconds,
       referencePrice: 1.1,
       stopPips: 10,
       targetPips: 14,
@@ -117,11 +118,27 @@ async function seedResolved(
   return { ids, decidedAt };
 }
 
+describe('promotion criteria', () => {
+  it('never applies a weaker out-of-sample gate than the documented default', () => {
+    const criteria = learningPromotionCriteria({
+      trainMinSamples: 10,
+      promotionMinAccuracy: 0.55,
+      promotionMinAuc: 0.55,
+      promotionMaxLogLossRegression: 0.02,
+    });
+    expect(criteria.minEvaluationSamples).toBeGreaterThanOrEqual(
+      DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples,
+    );
+    expect(DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples).toBe(40);
+  });
+});
+
 describe('learning cycle', () => {
   it('labels only verified outcomes, applies the horizon embargo and refuses to refit unchanged data', async () => {
     const h = await createHarness({
       env: {
         VORTEX_TRAIN_MIN_SAMPLES: '40',
+        VORTEX_SIGNAL_HORIZON_SECONDS: String(HORIZON_SECONDS),
         VORTEX_LEARNING_ENABLED: 'true',
         VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts',
       },
@@ -141,11 +158,15 @@ describe('learning cycle', () => {
         `update signals set outcome = 'UNRESOLVED', outcome_flags = '["data_unavailable"]'::jsonb where id = $1`,
         [noise.ids[1]],
       );
+      // A resolved row at a different horizon must not enter the label set:
+      // its target means something else than the configured horizon.
+      await seedResolved(h, { count: 1, startMs, offset: SAMPLE_COUNT + 2, horizonSeconds: 3600 });
 
       const first = await runLearningCycle(h.runtime, now);
       expect(first.datasetSize).toBe(SAMPLE_COUNT);
       expect(first.exclusions.draw).toBe(1);
       expect(first.exclusions.unresolved).toBe(1);
+      expect(first.exclusions.horizonMismatch).toBe(1);
       // The embargo is one full horizon, taken from the stored signals.
       expect(first.embargoSeconds).toBe(HORIZON_SECONDS);
       expect(first.evaluationSet).toBe('test');
@@ -207,7 +228,11 @@ describe('learning cycle', () => {
 
   it('never promotes a candidate that carries no information', async () => {
     const h = await createHarness({
-      env: { VORTEX_TRAIN_MIN_SAMPLES: '40', VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts' },
+      env: {
+        VORTEX_TRAIN_MIN_SAMPLES: '40',
+        VORTEX_SIGNAL_HORIZON_SECONDS: String(HORIZON_SECONDS),
+        VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts',
+      },
     });
     try {
       const now = new Date();
@@ -226,6 +251,11 @@ describe('learning cycle', () => {
       expect(versions[0]!.status).toBe('REJECTED');
       const promotion = versions[0]!.promotion as { checks?: { name: string; passed: boolean }[] };
       expect(promotion.checks?.some((c) => !c.passed)).toBe(true);
+      // A constant-feature candidate is at chance on every honest metric; the
+      // baseline and balanced-accuracy gates must say so explicitly.
+      const failed = promotion.checks?.filter((c) => !c.passed).map((c) => c.name) ?? [];
+      expect(failed).toContain('baseline_skill');
+      expect(failed).toContain('balanced_accuracy');
       // No champion is created, so live inference keeps using the rule ensemble.
       expect(await getChampion(h.client)).toBeNull();
     } finally {
@@ -235,7 +265,11 @@ describe('learning cycle', () => {
 
   it('surfaces a failed learning run on the health panel', async () => {
     const h = await createHarness({
-      env: { VORTEX_TRAIN_MIN_SAMPLES: '40', VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts' },
+      env: {
+        VORTEX_TRAIN_MIN_SAMPLES: '40',
+        VORTEX_SIGNAL_HORIZON_SECONDS: String(HORIZON_SECONDS),
+        VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts',
+      },
     });
     try {
       await h.client.query(
@@ -255,7 +289,11 @@ describe('learning cycle', () => {
 
   it('skips honestly when there are too few labelled outcomes', async () => {
     const h = await createHarness({
-      env: { VORTEX_TRAIN_MIN_SAMPLES: '200', VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts' },
+      env: {
+        VORTEX_TRAIN_MIN_SAMPLES: '200',
+        VORTEX_SIGNAL_HORIZON_SECONDS: String(HORIZON_SECONDS),
+        VORTEX_ARTIFACT_DIR: '/tmp/vortex-test-artifacts',
+      },
     });
     try {
       await seedResolved(h, { count: 5, startMs: Date.now() - 6 * HOUR_MS });

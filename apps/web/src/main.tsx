@@ -495,9 +495,13 @@ function Dashboard() {
                     </dd>
                   </div>
                   <div>
-                    <dt>AUC · log loss · ECE</dt>
+                    <dt>AUC · balanced acc. · log loss · ECE</dt>
                     <dd>
                       {model.champion.metrics?.auc === null || model.champion.metrics?.auc === undefined ? 'n/a' : model.champion.metrics.auc.toFixed(3)}
+                      {' · '}
+                      {model.champion.metrics?.balancedAccuracy === null || model.champion.metrics?.balancedAccuracy === undefined
+                        ? 'n/a'
+                        : `${(model.champion.metrics.balancedAccuracy * 100).toFixed(1)}%`}
                       {' · '}
                       {model.champion.metrics?.logLoss === null || model.champion.metrics?.logLoss === undefined ? 'n/a' : model.champion.metrics.logLoss.toFixed(3)}
                       {' · '}
@@ -507,6 +511,10 @@ function Dashboard() {
                 </dl>
               ) : null}
               {model ? <p className="muted">{model.note}</p> : null}
+              <p className="muted">
+                Balanced accuracy is the mean of per-class recall: 50% is chance, and promotion requires something
+                strictly above it. The metrics are out-of-sample and are not a claim of future profitability.
+              </p>
               {model && model.champion && model.champion.walkForward.length > 0 ? (
                 <p className="muted">
                   walk-forward folds:{' '}

@@ -144,6 +144,7 @@ export interface MarketQualityRow {
 
 export interface ModelMetricsView {
   accuracy?: number | null;
+  balancedAccuracy?: number | null;
   auc?: number | null;
   logLoss?: number | null;
   brier?: number | null;
@@ -404,6 +405,7 @@ export function summarizeModelVersions(rows: ModelVersionRowView[]): ModelSummar
           metrics: metrics
             ? {
                 accuracy: finiteOrNull(metrics.accuracy),
+                balancedAccuracy: finiteOrNull(metrics.balancedAccuracy),
                 auc: finiteOrNull(metrics.auc),
                 logLoss: finiteOrNull(metrics.logLoss),
                 brier: finiteOrNull(metrics.brier),
