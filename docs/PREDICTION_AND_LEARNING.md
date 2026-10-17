@@ -215,6 +215,10 @@ setting that can lower it.
 * Promotion metrics are out-of-sample for the evaluated window; they are not a
   forecast of future profitability and do not establish that a champion will
   keep its edge.
+* The dashboard's per-group accuracy interval is a Wilson binomial interval
+  over decisive signals. Signals whose prediction-horizon windows overlap are
+  not strictly independent observations, so the interval is a descriptive
+  uncertainty aid, not an exact confidence statement about a trading edge.
 
 ---
 

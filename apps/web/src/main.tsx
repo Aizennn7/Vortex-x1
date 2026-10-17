@@ -593,7 +593,9 @@ function Dashboard() {
               ) : null}
               <p className="muted">
                 Accuracy uses decisive outcomes only (wins + losses); the parenthesised range is its 95% Wilson
-                interval. † marks a group with fewer than 10 decisive outcomes — indicative, not a measured edge.
+                interval. The interval assumes independent outcomes, so overlapping horizon windows make it
+                descriptive rather than exact. † marks a group with fewer than 10 decisive outcomes — indicative,
+                not a measured edge.
               </p>
               {performanceValue.note ? <p className="muted">{performanceValue.note}</p> : null}
             </>
