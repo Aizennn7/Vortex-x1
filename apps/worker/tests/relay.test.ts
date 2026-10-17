@@ -205,6 +205,35 @@ describe('public plane', () => {
     expect(notFound.status).toBe(404);
   });
 
+  /**
+   * Query parameters used to reach SQL unvalidated: `limit=-5` returned 500
+   * "LIMIT must not be negative" and `limit=abc` returned 500 "invalid input
+   * syntax for type bigint: NaN", both leaking database internals to the
+   * caller and inflating the 5xx rate that operators alert on.
+   */
+  it('answers malformed query parameters with 400, not 500', async () => {
+    for (const [path, message] of [
+      ['/api/signals?limit=-5', 'limit'],
+      ['/api/signals?limit=abc', 'limit'],
+      ['/api/signals?limit=1.5', 'limit'],
+      ['/api/signals?from=not-a-date', 'from'],
+      ['/api/signals?to=2026-13-45', 'to'],
+    ] as const) {
+      const { status, body } = await api(path);
+      expect({ path, status }).toEqual({ path, status: 400 });
+      expect(body.error.code).toBe('invalid_request');
+      expect(body.error.message).toContain(message);
+      // The caller must never see the database's own error text.
+      expect(body.error.message).not.toMatch(/bigint|LIMIT must not be negative/i);
+    }
+  });
+
+  it('clamps an oversized limit instead of refusing the request', async () => {
+    const { status, body } = await api('/api/signals?limit=999999');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.data.signals)).toBe(true);
+  });
+
   it('rejects unsupported methods instead of running them', async () => {
     const { status, body } = await api('/api/summary', { method: 'POST', body: '{}' });
     expect(status).toBe(404);

@@ -87,6 +87,27 @@ interface ApiError {
   detail?: unknown;
 }
 
+/**
+ * Parse a bounded, positive integer query parameter.
+ *
+ * These values come straight from the URL, and passing them to SQL unvalidated
+ * turned a typo into a 500: `limit=-5` produced "LIMIT must not be negative"
+ * and `limit=abc` produced "invalid input syntax for type bigint: NaN", both
+ * echoed back to the caller. A malformed request is the caller's mistake, so it
+ * is answered with 400 and a message that names the parameter rather than the
+ * database's internals.
+ */
+function boundedInt(raw: string | null, name: string, fallback: number, max: number): number {
+  if (raw === null || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new HttpError(400, 'invalid_request', `${name} must be a positive integer`);
+  }
+  // Clamping rather than rejecting keeps oversized values (a client asking for
+  // "everything") useful while still bounding the work.
+  return Math.min(value, max);
+}
+
 class HttpError extends Error implements ApiError {
   constructor(
     readonly status: number,
@@ -512,13 +533,21 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
   };
 }
 
+/** ISO timestamp parameter, or undefined when absent. Rejects garbage early. */
+function timestampParam(raw: string | null, name: string): string | undefined {
+  if (raw === null || raw.trim() === '') return undefined;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) throw new HttpError(400, 'invalid_request', `${name} must be an ISO timestamp`);
+  return new Date(ms).toISOString();
+}
+
 async function signalsRoute(ctx: RouteContext): Promise<unknown> {
   const client = db(ctx.runtime);
-  const limit = Math.min(Number(ctx.url.searchParams.get('limit') ?? 50), 500);
+  const limit = boundedInt(ctx.url.searchParams.get('limit'), 'limit', 50, 500);
   const pairs = ctx.url.searchParams.get('pairs')?.split(',').filter(Boolean);
   const outcomes = ctx.url.searchParams.get('outcomes')?.split(',').filter(Boolean) as never[] | undefined;
-  const from = ctx.url.searchParams.get('from') ?? undefined;
-  const to = ctx.url.searchParams.get('to') ?? undefined;
+  const from = timestampParam(ctx.url.searchParams.get('from'), 'from');
+  const to = timestampParam(ctx.url.searchParams.get('to'), 'to');
   const rows = await listSignals(client, { limit, pairs, outcomes, from, to });
   return { signals: rows, count: rows.length };
 }
