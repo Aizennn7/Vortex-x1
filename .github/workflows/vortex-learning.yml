@@ -36,8 +36,8 @@ jobs:
       VORTEX_LEARNING_ENABLED: ${{ vars.VORTEX_LEARNING_ENABLED || 'true' }}
       VORTEX_TRAIN_MIN_SAMPLES: ${{ vars.VORTEX_TRAIN_MIN_SAMPLES || '200' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload model artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: vortex-model-artifacts-${{ github.run_id }}
           path: artifacts
