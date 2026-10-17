@@ -168,6 +168,51 @@ export async function modelRegistrySummary(
 }
 
 /* ------------------------------------------------------------------------- */
+/* Opportunity scan (shared by the relay and the snapshot exporter)           */
+/* ------------------------------------------------------------------------- */
+
+export interface ScanSummaryView {
+  ranAt: string;
+  slot: string | null;
+  evaluated: number;
+  published: number;
+  noTrade: boolean;
+  blocked: number;
+  bestMiss: string | null;
+  notes: string[];
+}
+
+/**
+ * Compact, secret-free view of the most recent opportunity scan.
+ *
+ * Without it the dashboard can only show an empty signal table, which is
+ * indistinguishable from a broken pipeline. `bestMiss` is produced by the
+ * engine as `PAIR (gate, gate)` — the pair that came closest and the exact
+ * gates that rejected it. Values come straight from the recorded job detail;
+ * nothing is estimated.
+ */
+export function summarizeScan(
+  job: { finishedAt: string | null; startedAt: string; slotKey: string; detail: Record<string, unknown> } | null,
+): ScanSummaryView | null {
+  if (!job) return null;
+  const detail = (job.detail ?? {}) as Record<string, unknown>;
+  const count = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+  const notes = Array.isArray(detail.detail)
+    ? (detail.detail as unknown[]).filter((n): n is string => typeof n === 'string').slice(0, 4)
+    : [];
+  return {
+    ranAt: job.finishedAt ?? job.startedAt,
+    slot: typeof detail.slot === 'string' ? detail.slot : (job.slotKey ?? null),
+    evaluated: count(detail.evaluated),
+    published: count(detail.published),
+    noTrade: detail.noTrade === true,
+    blocked: count(detail.blocked),
+    bestMiss: typeof detail.bestMiss === 'string' ? detail.bestMiss : null,
+    notes,
+  };
+}
+
+/* ------------------------------------------------------------------------- */
 /* Performance breakdowns (shared by the relay and the snapshot exporter)     */
 /* ------------------------------------------------------------------------- */
 

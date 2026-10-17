@@ -8,12 +8,16 @@ import type { Candle, MarketSnapshot, StrategyVote } from '../src/types.js';
 
 const START = Date.parse('2026-01-05T09:00:00.000Z');
 
-function series(count: number, fn: (i: number) => { open: number; high: number; low: number; close: number }): Candle[] {
+function series(
+  count: number,
+  fn: (i: number) => { open: number; high: number; low: number; close: number },
+  pair = 'EUR/USD',
+): Candle[] {
   return Array.from({ length: count }, (_, i) => {
     const prices = fn(i);
     const openTime = new Date(START + i * 60_000).toISOString();
     return {
-      pair: 'EUR/USD',
+      pair,
       timeframe: 'M1' as const,
       openTime,
       closeTime: new Date(START + (i + 1) * 60_000).toISOString(),
@@ -134,6 +138,31 @@ describe('regime detection', () => {
     const regime = detectRegime(uptrend().slice(0, 10));
     expect(regime.regime).toBe('UNKNOWN');
     expect(regime.confidence).toBe(0);
+  });
+
+  /**
+   * `slope()` is mean-normalised, so the trend threshold is scale-free: the
+   * same percentage drift per bar must classify identically on a 1.1-priced
+   * pair and on a 151-priced one. This pins the unit contract that a
+   * price-distance reading would silently break.
+   */
+  it('classifies the same percentage drift identically on different price scales', () => {
+    const drift = (start: number, perBar: number) =>
+      series(
+        160,
+        (i) => {
+          const base = start * (1 + i * perBar);
+          const step = start * perBar;
+          return { open: base, high: base + step * 1.5, low: base - step * 0.4, close: base + step };
+        },
+        start > 10 ? 'USD/JPY' : 'EUR/USD',
+      );
+    const usd = drift(1.1, 0.00014);
+    const jpy = drift(151, 0.00014);
+    const usdRegime = detectRegime(usd, aggregate(usd, 'M3', 'test')).regime;
+    const jpyRegime = detectRegime(jpy, aggregate(jpy, 'M3', 'test')).regime;
+    expect(usdRegime).toBe(jpyRegime);
+    expect(['TREND_UP', 'VOLATILE']).toContain(usdRegime);
   });
 });
 

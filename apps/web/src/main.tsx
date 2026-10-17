@@ -259,6 +259,7 @@ function Dashboard() {
   const alerts = summaryValue?.alerts ?? [];
   const model = summaryValue?.model ?? null;
   const learning = summaryValue?.learning ?? null;
+  const scan = summaryValue?.scan ?? null;
 
 
   const stalePairs = useMemo(() => stalePairsOf(marketData), [marketData]);
@@ -345,6 +346,79 @@ function Dashboard() {
             </dl>
           ) : null}
           {health.result.state === 'ready' ? <p className="muted">{health.result.value.note}</p> : null}
+        </Card>
+
+        <Card
+          title="Opportunity scan"
+          status={
+            summary.result.state !== 'ready'
+              ? undefined
+              : scan
+                ? scan.published > 0
+                  ? 'CONNECTED'
+                  : 'IDLE'
+                : undefined
+          }
+        >
+          {summary.result.state === 'loading' ? <Loading what="the last scan" /> : null}
+          {summary.result.state === 'ready' && !scan ? (
+            <p className="muted">
+              No completed scan is recorded yet. The scan runs shortly before each scheduled entry; until the first
+              one finishes there is nothing to report. This is not an error.
+            </p>
+          ) : null}
+          {scan ? (
+            <>
+              <dl className="facts">
+                <div>
+                  <dt>last scan</dt>
+                  <dd>
+                    <Timestamp iso={scan.ranAt} />
+                  </dd>
+                </div>
+                <div>
+                  <dt>pairs evaluated</dt>
+                  <dd>{scan.evaluated}</dd>
+                </div>
+                <div>
+                  <dt>signals published</dt>
+                  <dd>{scan.published}</dd>
+                </div>
+                <div>
+                  <dt>rejected by gates</dt>
+                  <dd>{scan.blocked}</dd>
+                </div>
+                <div>
+                  <dt>outcome of the scan</dt>
+                  <dd>
+                    {scan.published > 0
+                      ? `${scan.published} opportunity(ies) cleared every gate`
+                      : 'NO-TRADE — no candidate cleared every gate'}
+                  </dd>
+                </div>
+                {scan.bestMiss ? (
+                  <div>
+                    <dt>closest miss</dt>
+                    <dd>{scan.bestMiss}</dd>
+                  </div>
+                ) : null}
+              </dl>
+              {scan.notes.length > 0 ? (
+                <ul className="notes">
+                  {scan.notes.map((note, index) => (
+                    <li key={index} className="muted">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="muted">
+                NO-TRADE is the engine&apos;s decision, not an outage: every candidate failed at least one quality,
+                edge or risk gate. The failed gate names are listed above. A scan that did not run at all is reported
+                as a stale job, not as NO-TRADE.
+              </p>
+            </>
+          ) : null}
         </Card>
 
         <Card title="Worker & jobs" status={workerBadge}>

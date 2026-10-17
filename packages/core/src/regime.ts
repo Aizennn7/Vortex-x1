@@ -21,6 +21,11 @@ export function detectRegime(m1: Candle[], m3: Candle[] = []): RegimeState {
   const meta = instrumentMeta(m1[0]!.pair);
   const atrPips = atrValue / meta.pipSize;
 
+  // `slope()` returns a slope NORMALISED by the mean price, i.e. a fractional
+  // change per bar, not a price distance. 0.00012 therefore means "0.012% per
+  // bar" on every instrument, which is why one constant is comparable across
+  // EUR/USD and USD/JPY. (Interpreting it as pips would be a 100x error on a
+  // JPY cross: 0.012 pips/bar instead of 1.2.)
   const slopeM1 = slope(values, 30);
   const slopeM3 = slope(m3.map((c) => c.close), 10);
   const directional = (slopeM1 + slopeM3) / 2;

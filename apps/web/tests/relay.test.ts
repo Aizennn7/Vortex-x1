@@ -18,6 +18,7 @@ import {
   marketDataBadge,
   marketDataLabel,
   normalizeBreakdownRows,
+  toScanSummary,
   normalizeWorkerLiveness,
   reduceRelayState,
   stalePairs,
@@ -701,5 +702,46 @@ describe('performance reader availability', () => {
     const result = await client.performance!();
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/before per-pair breakdowns/);
+  });
+});
+
+
+describe('opportunity scan block', () => {
+  it('normalises the recorded scan summary', () => {
+    const scan = toScanSummary({
+      ranAt: '2026-03-03T10:03:52.000Z',
+      slot: 'slot-2026-03-03T10:05:00.000Z',
+      evaluated: 8,
+      published: 0,
+      noTrade: true,
+      blocked: 8,
+      bestMiss: 'EUR/USD (confidence, strategy_consensus)',
+      notes: ['NO-TRADE for slot X: 8 pair(s) evaluated'],
+    });
+    expect(scan?.evaluated).toBe(8);
+    expect(scan?.published).toBe(0);
+    expect(scan?.noTrade).toBe(true);
+    expect(scan?.bestMiss).toContain('confidence');
+    expect(scan?.notes).toHaveLength(1);
+  });
+
+  it('treats a block without a timestamp or evaluation count as absent', () => {
+    // Rendering zeros would read as "evaluated 0 pairs", which is a different
+    // and much more alarming claim than "no scan recorded".
+    expect(toScanSummary(null)).toBeNull();
+    expect(toScanSummary({ published: 3 })).toBeNull();
+    expect(toScanSummary({ ranAt: '2026-03-03T10:03:52.000Z' })).toBeNull();
+    expect(toScanSummary('nonsense')).toBeNull();
+  });
+
+  it('coerces missing counts to zero only when the block is otherwise valid', () => {
+    const scan = toScanSummary({ ranAt: '2026-03-03T10:03:52.000Z', evaluated: 3 });
+    expect(scan).toMatchObject({ evaluated: 3, published: 0, blocked: 0, noTrade: false, bestMiss: null });
+    expect(scan?.notes).toEqual([]);
+  });
+
+  it('rejects non-finite counts rather than passing NaN to the UI', () => {
+    const scan = toScanSummary({ ranAt: '2026-03-03T10:03:52.000Z', evaluated: 2, published: Number.NaN });
+    expect(scan?.published).toBe(0);
   });
 });

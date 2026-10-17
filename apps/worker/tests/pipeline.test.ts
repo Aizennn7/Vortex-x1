@@ -141,6 +141,80 @@ describe('worker pipeline', () => {
     }
   });
 
+  /**
+   * A provider that returns only the newest few bars cannot backfill a hole
+   * that opened while the worker was down. Every fetched batch is internally
+   * contiguous, so the batch validator reports no gaps — the defect this test
+   * pins is that the quality row used to say CONNECTED and `gapsDetected`
+   * stayed at zero through a real coverage loss.
+   */
+  it('reports a coverage hole between batches as DEGRADED instead of CONNECTED', async () => {
+    const startMs = Date.parse('2026-03-03T10:00:00.000Z');
+    let nowMs = startMs;
+    const MIN = 60_000;
+    const bar = (pair: string, openMs: number) => {
+      const base = 1.1 + (openMs - startMs) / MIN / 1_000_000;
+      return {
+        pair,
+        timeframe: 'M1' as const,
+        openTime: new Date(openMs).toISOString(),
+        open: base,
+        high: base + 0.0002,
+        low: base - 0.0001,
+        close: base + 0.0001,
+        provider: 'edge-case',
+        isFinal: true,
+      };
+    };
+    let tailBars = 0;
+    const provider = {
+      name: 'edge-case',
+      synthetic: false,
+      async fetchTimeSeries(request: { pair: string }) {
+        const newestOpen = Math.floor(nowMs / MIN) * MIN - MIN;
+        const bars = Array.from({ length: tailBars || 120 }, (_, i) =>
+          bar(request.pair, newestOpen - (tailBars ? tailBars - 1 - i : 119 - i) * MIN),
+        );
+        return { pair: request.pair, timeframe: 'M1', candles: bars, creditsUsed: 0 };
+      },
+      async fetchQuote() {
+        throw new Error('not used');
+      },
+    } as never;
+
+    const h = await createHarness({ provider, env: { VORTEX_PAIRS: 'EUR/USD' } });
+    try {
+      await withKeys(h, async () => {
+        const first = await runIngestionCycle(h.runtime, new Date(nowMs));
+        expect(first.pairsFetched).toBe(1);
+        expect(first.gapsDetected).toBe(0);
+        const connected = await h.client.query<{ status: string }>(
+          'select status from market_data_quality where pair = $1',
+          ['EUR/USD'],
+        );
+        expect(connected.rows[0]?.status).toBe('CONNECTED');
+
+        // The worker was away for 90 minutes; the provider now returns only
+        // the tail, so 85 trading minutes are simply not in the database.
+        nowMs += 90 * MIN;
+        tailBars = 5;
+        const second = await runIngestionCycle(h.runtime, new Date(nowMs));
+        expect(second.pairsFetched).toBe(1);
+        expect(second.gapsDetected).toBeGreaterThan(80);
+
+        const degraded = await h.client.query<{ status: string; gap_count: number; detail: string }>(
+          'select status, gap_count, detail from market_data_quality where pair = $1',
+          ['EUR/USD'],
+        );
+        expect(degraded.rows[0]?.status).toBe('DEGRADED');
+        expect(Number(degraded.rows[0]?.gap_count)).toBeGreaterThan(80);
+        expect(degraded.rows[0]?.detail ?? '').toMatch(/missing/);
+      });
+    } finally {
+      await h.close();
+    }
+  }, 120_000);
+
   it('leaves the door open: an unresolved settlement is deferred, not faked', async () => {
     const h = await createHarness();
     try {

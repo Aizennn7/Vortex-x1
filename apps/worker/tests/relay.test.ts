@@ -151,6 +151,53 @@ describe('public plane', () => {
     expect(summary.body.data.signals.note).toContain('decisive');
   });
 
+  it('reports the last opportunity scan so an empty signal list is explainable', async () => {
+    await harness.client.query(
+      `insert into job_runs (job_name, slot_key, worker_id, status, started_at, finished_at, duration_ms, detail)
+       values ('signal_cycle', 'signal-2026-03-03T10:05:00.000Z', 'relay-test-worker', 'SUCCEEDED',
+               now() - interval '2 minutes', now() - interval '2 minutes', 120, $1::jsonb)`,
+      [
+        JSON.stringify({
+          slot: 'slot-2026-03-03T10:05:00.000Z',
+          evaluated: 6,
+          published: 0,
+          noTrade: true,
+          blocked: 6,
+          bestMiss: 'EUR/USD (confidence)',
+          detail: ['NO-TRADE for slot X: 6 pair(s) evaluated'],
+        }),
+      ],
+    );
+    const { status, body } = await api('/api/summary');
+    expect(status).toBe(200);
+    expect(body.data.scan).toMatchObject({
+      evaluated: 6,
+      published: 0,
+      noTrade: true,
+      blocked: 6,
+      bestMiss: 'EUR/USD (confidence)',
+    });
+    expect(body.data.scan.notes[0]).toMatch(/NO-TRADE/);
+    expect(typeof body.data.scan.ranAt).toBe('string');
+  });
+
+  it('omits the scan block entirely when no scan has ever run', async () => {
+    // A fresh harness has no signal_cycle job; the dashboard must show
+    // "no scan recorded", not a fabricated row of zeros.
+    const fresh = await createHarness({ env: { VORTEX_WORKER_ID: 'fresh-scan-worker' } });
+    const server2 = createRelay(fresh.runtime);
+    await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server2.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/summary`);
+      const payload = (await response.json()) as { data: { scan: unknown } };
+      expect(payload.data.scan).toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+      await fresh.close();
+    }
+  }, 120_000);
+
   it('never exposes the admin plane through the public plane', async () => {
     const { status } = await api('/admin/status');
     expect(status).toBe(401);

@@ -195,6 +195,18 @@ export interface LearningSummary {
   note: string;
 }
 
+/** The most recent opportunity scan, as recorded by the signal_cycle job. */
+export interface ScanSummary {
+  ranAt: string;
+  slot: string | null;
+  evaluated: number;
+  published: number;
+  noTrade: boolean;
+  blocked: number;
+  bestMiss: string | null;
+  notes: string[];
+}
+
 export interface SummaryPayload {
   generatedAt?: string;
   marketOpen?: boolean;
@@ -237,6 +249,8 @@ export interface SummaryPayload {
   model?: ModelSummary | null;
   /** Present when learning-run history is readable. */
   learning?: LearningSummary | null;
+  /** Present when the relay recorded a signal_cycle job. */
+  scan?: ScanSummary | null;
   telegram: { configuration: { status: string; detail: string }; sent: number; failed: number; unconfirmed: number };
   alerts: { severity: string; code: string; title: string; lastSeenAt: string }[];
   note?: string;
@@ -475,6 +489,30 @@ export function wilsonInterval(successes: number, total: number, z = 1.96): { lo
   };
 }
 
+/**
+ * Normalise the scan block. Counts are coerced, never invented: a block
+ * without a timestamp or an evaluation count is treated as absent rather than
+ * rendered as a row of zeros that would read as "evaluated 0 pairs".
+ */
+export function toScanSummary(payload: unknown): ScanSummary | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const source = payload as Record<string, unknown>;
+  const ranAt = typeof source.ranAt === 'string' ? source.ranAt : null;
+  const evaluated = finiteOrNull(source.evaluated);
+  if (!ranAt || evaluated === null) return null;
+  const count = (value: unknown): number => finiteOrNull(value) ?? 0;
+  return {
+    ranAt,
+    slot: typeof source.slot === 'string' ? source.slot : null,
+    evaluated,
+    published: count(source.published),
+    noTrade: source.noTrade === true,
+    blocked: count(source.blocked),
+    bestMiss: typeof source.bestMiss === 'string' ? source.bestMiss : null,
+    notes: Array.isArray(source.notes) ? source.notes.filter((n): n is string => typeof n === 'string').slice(0, 4) : [],
+  };
+}
+
 /* ------------------------------------------------------------------------- */
 /* Dashboard state reducers (pure, so the panel states are unit tested)       */
 /* ------------------------------------------------------------------------- */
@@ -687,7 +725,10 @@ export function createRelayClient(baseUrl = RELAY_BASE): RelayClient {
 
   return {
     health: () => get<HealthPayload>('/health'),
-    summary: () => get<SummaryPayload>('/api/summary'),
+    summary: async () => {
+      const res = await get<SummaryPayload>('/api/summary');
+      return res.ok && res.data ? { ...res, data: { ...res.data, scan: toScanSummary(res.data.scan) } } : res;
+    },
     config: () => get<Record<string, unknown>>('/api/config'),
     signals: (limit = 25) => get<{ signals: SignalRow[]; count: number }>(`/api/signals?limit=${limit}`),
     async performance(): Promise<RelayResult<PerformanceOverview>> {
@@ -974,6 +1015,9 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
             : null,
           model: modelsRes.ok ? summarizeModelVersions(modelsRes.data ?? []) : null,
           learning: runsRes.ok ? summarizeLearningRuns(runsRes.data ?? []) : null,
+          // The public views expose no job detail, so the scan block is
+          // genuinely unavailable here — omitted rather than faked.
+          scan: null,
           telegram: {
             configuration: {
               status: tgAgent?.status ?? 'NOT VERIFIED',
@@ -1187,6 +1231,7 @@ export function createSnapshotClient(
           workerStatus: worker ? worker.liveness : 'NOT VERIFIED',
           lastSuccessfulJob,
           marketData: computeMarketDataStaleness(s.marketData ?? [], 90, nowMs),
+          scan: toScanSummary(s.scan),
         },
         error: null,
         kind: 'none',

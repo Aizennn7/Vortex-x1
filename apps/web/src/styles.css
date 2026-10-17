@@ -153,7 +153,8 @@ code:focus-visible {
 
 .badge-degraded,
 .badge-not-verified,
-.badge-configuration-required {
+.badge-configuration-required,
+.badge-idle {
   color: var(--warn);
 }
 
@@ -343,4 +344,13 @@ time {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* Scan notes: compact, wrapped, and readable at narrow widths. */
+.notes {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.2rem;
+  overflow-wrap: anywhere;
 }

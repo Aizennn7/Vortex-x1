@@ -139,6 +139,41 @@ export function findGaps(
   return gaps;
 }
 
+/**
+ * Count minute slots the market was OPEN for but which have no stored candle.
+ *
+ * `findGaps` treats every missing bucket as a hole, which makes a weekend look
+ * like thousands of data gaps. Ingestion needs the opposite question: did we
+ * lose data, or was the market simply shut? Closures are not outages, and a
+ * quality badge that cries wolf every Monday is worse than no badge at all.
+ *
+ * `isOpen` defaults to "always open" so the function stays usable for
+ * 24/7 instruments; the worker passes the FX session calendar.
+ */
+export function missingOpenSlots(
+  presentOpenTimes: Iterable<number>,
+  from: number | string | Date,
+  to: number | string | Date,
+  stepSeconds = TIMEFRAME_SECONDS.M1,
+  isOpen: (ms: number) => boolean = () => true,
+): number {
+  const step = Math.max(1, Math.floor(stepSeconds)) * 1000;
+  const present = new Set(presentOpenTimes);
+  const start = Math.floor(toDate(from).getTime() / step) * step;
+  const end = Math.floor(toDate(to).getTime() / step) * step;
+  if (end < start) return 0;
+  // Bound the walk: a years-old anchor must not turn into a million-iteration
+  // loop. Anything beyond a week is already "massively incomplete".
+  const maxSlots = Math.ceil((7 * 24 * 60 * 60 * 1000) / step);
+  const begin = Math.max(start, end - (maxSlots - 1) * step);
+  let missing = 0;
+  for (let t = begin; t <= end; t += step) {
+    if (!isOpen(t)) continue;
+    if (!present.has(t)) missing += 1;
+  }
+  return missing;
+}
+
 export interface FreshnessReport {
   ageSeconds: number;
   isStale: boolean;

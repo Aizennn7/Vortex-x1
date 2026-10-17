@@ -32,6 +32,7 @@ import {
   getModelVersion,
   insertKey,
   lastSuccessfulJob,
+  lastSuccessfulJobsByKind,
   listAlerts,
   listAudit,
   listDeliveries,
@@ -58,7 +59,7 @@ import {
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
-import { modelRegistrySummary, performanceOverview } from './services/registry.js';
+import { modelRegistrySummary, performanceOverview, summarizeScan } from './services/registry.js';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runSignalCycle } from './jobs/signals.js';
@@ -398,6 +399,7 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       database: { status: 'DISCONNECTED', detail: runtime.db.detail },
       worker: null,
       lastSuccessfulJob: null,
+      scan: null,
       marketData: [],
       providerBudget: null,
       signals: null,
@@ -409,9 +411,11 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     };
   }
   const client = db(runtime);
-  const [workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components, registry] = await Promise.all([
+  const [workers, lastJob, lastJobs, rawQuality, budget, counts, deliveries, alerts, components, registry] =
+    await Promise.all([
     workerStatus(client),
     lastSuccessfulJob(client),
+    lastSuccessfulJobsByKind(client),
     listQuality(client),
     runtime.keyPool.usageSnapshots(),
     signalCounts(client),
@@ -457,6 +461,13 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
           workerId: lastJob.workerId,
         }
       : null,
+    /**
+     * Why the engine did or did not publish. Without this the dashboard can
+     * only show an empty signal table, which is indistinguishable from a
+     * broken pipeline. The values come straight from the last signal_cycle
+     * job's recorded detail — no derivation, no estimate.
+     */
+    scan: summarizeScan(lastJobs.signal_cycle ?? null),
     marketData: quality,
     providerBudget: {
       enabledKeys: budget.summary.enabledKeys,

@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { assertNoSecrets, isMarketOpen, publicRuntimeConfig, redact, secretValues } from '@vortex/core';
 import {
   lastSuccessfulJob,
+  lastSuccessfulJobsByKind,
   listAlerts,
   listDeliveries,
   listQuality,
@@ -27,7 +28,7 @@ import {
 } from '@vortex/db';
 import { WorkerRuntime } from '../apps/worker/src/runtime.js';
 import { healthSnapshot } from '../apps/worker/src/jobs/maintenance.js';
-import { modelRegistrySummary, performanceOverview } from '../apps/worker/src/services/registry.js';
+import { modelRegistrySummary, performanceOverview, summarizeScan } from '../apps/worker/src/services/registry.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultOut = join(root, 'apps', 'web', 'public', 'snapshot.json');
@@ -43,7 +44,6 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       generatedAt: now.toISOString(),
       configured: false,
       error: runtime.db.detail || 'Database was not configured when this snapshot was built.',
-      configured: false,
       health: null,
       summary: null,
       config: publicRuntimeConfig(runtime.config),
@@ -59,6 +59,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
     dbPing,
     workers,
     lastJob,
+    lastJobs,
     rawQuality,
     budget,
     counts,
@@ -73,6 +74,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       runtime.pingDb(),
       workerStatus(client),
       lastSuccessfulJob(client),
+      lastSuccessfulJobsByKind(client),
       listQuality(client),
       runtime.keyPool.usageSnapshots(),
       signalCounts(client),
@@ -155,6 +157,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
             workerId: lastJob.workerId,
           }
         : null,
+      scan: summarizeScan(lastJobs.signal_cycle ?? null),
       marketData: quality,
       providerBudget: {
         enabledKeys: budget.summary.enabledKeys,
