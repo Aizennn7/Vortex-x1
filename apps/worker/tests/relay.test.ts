@@ -10,7 +10,16 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { encryptSecret, insertSignal, keyFingerprint, listAudit, listKeys, updateKey } from '@vortex/db';
+import {
+  encryptSecret,
+  insertModelVersion,
+  insertSignal,
+  keyFingerprint,
+  listAudit,
+  listKeys,
+  listModelVersions,
+  updateKey,
+} from '@vortex/db';
 import { maskKey } from '@vortex/core';
 import {
   createHarness,
@@ -142,11 +151,87 @@ describe('public plane', () => {
     expect(summary.body.data.signals.note).toContain('decisive');
   });
 
+  it('reports the last opportunity scan so an empty signal list is explainable', async () => {
+    await harness.client.query(
+      `insert into job_runs (job_name, slot_key, worker_id, status, started_at, finished_at, duration_ms, detail)
+       values ('signal_cycle', 'signal-2026-03-03T10:05:00.000Z', 'relay-test-worker', 'SUCCEEDED',
+               now() - interval '2 minutes', now() - interval '2 minutes', 120, $1::jsonb)`,
+      [
+        JSON.stringify({
+          slot: 'slot-2026-03-03T10:05:00.000Z',
+          evaluated: 6,
+          published: 0,
+          noTrade: true,
+          blocked: 6,
+          bestMiss: 'EUR/USD (confidence)',
+          detail: ['NO-TRADE for slot X: 6 pair(s) evaluated'],
+        }),
+      ],
+    );
+    const { status, body } = await api('/api/summary');
+    expect(status).toBe(200);
+    expect(body.data.scan).toMatchObject({
+      evaluated: 6,
+      published: 0,
+      noTrade: true,
+      blocked: 6,
+      bestMiss: 'EUR/USD (confidence)',
+    });
+    expect(body.data.scan.notes[0]).toMatch(/NO-TRADE/);
+    expect(typeof body.data.scan.ranAt).toBe('string');
+  });
+
+  it('omits the scan block entirely when no scan has ever run', async () => {
+    // A fresh harness has no signal_cycle job; the dashboard must show
+    // "no scan recorded", not a fabricated row of zeros.
+    const fresh = await createHarness({ env: { VORTEX_WORKER_ID: 'fresh-scan-worker' } });
+    const server2 = createRelay(fresh.runtime);
+    await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server2.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/summary`);
+      const payload = (await response.json()) as { data: { scan: unknown } };
+      expect(payload.data.scan).toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+      await fresh.close();
+    }
+  }, 120_000);
+
   it('never exposes the admin plane through the public plane', async () => {
     const { status } = await api('/admin/status');
     expect(status).toBe(401);
     const notFound = await api('/api/does-not-exist');
     expect(notFound.status).toBe(404);
+  });
+
+  /**
+   * Query parameters used to reach SQL unvalidated: `limit=-5` returned 500
+   * "LIMIT must not be negative" and `limit=abc` returned 500 "invalid input
+   * syntax for type bigint: NaN", both leaking database internals to the
+   * caller and inflating the 5xx rate that operators alert on.
+   */
+  it('answers malformed query parameters with 400, not 500', async () => {
+    for (const [path, message] of [
+      ['/api/signals?limit=-5', 'limit'],
+      ['/api/signals?limit=abc', 'limit'],
+      ['/api/signals?limit=1.5', 'limit'],
+      ['/api/signals?from=not-a-date', 'from'],
+      ['/api/signals?to=2026-13-45', 'to'],
+    ] as const) {
+      const { status, body } = await api(path);
+      expect({ path, status }).toEqual({ path, status: 400 });
+      expect(body.error.code).toBe('invalid_request');
+      expect(body.error.message).toContain(message);
+      // The caller must never see the database's own error text.
+      expect(body.error.message).not.toMatch(/bigint|LIMIT must not be negative/i);
+    }
+  });
+
+  it('clamps an oversized limit instead of refusing the request', async () => {
+    const { status, body } = await api('/api/signals?limit=999999');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.data.signals)).toBe(true);
   });
 
   it('rejects unsupported methods instead of running them', async () => {
@@ -452,18 +537,108 @@ describe('privileged plane — operations', () => {
     expect(JSON.stringify(jobs.body.data)).toContain('maintenance');
   });
 
+  /**
+   * The calendar must not decide what this test proves. When the FX market is
+   * closed the cycle returns before it ever looks at the key pool, so the
+   * clock is pinned to a weekday inside the session and restored afterwards.
+   */
+  async function withPinnedClock<T>(iso: string, fn: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+    try {
+      return await fn();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
   it('degrades honestly when a job needs provider keys it does not have', async () => {
     const keys = await listKeys(harness.client);
     for (const key of keys) {
       await updateKey(harness.client, key.id, { enabled: false });
     }
     harness.runtime.keyPool.invalidate();
-    const result = await api('/admin/ingest/run', { method: 'POST', headers: admin });
+    const result = await withPinnedClock('2026-01-05T10:00:00.000Z', () =>
+      api('/admin/ingest/run', { method: 'POST', headers: admin }),
+    );
     expect(result.status).toBe(200);
     // The cycle must report the degradation honestly instead of claiming success
     // or spinning on the provider.
     expect(result.body.data.exhausted).toBe(true);
     expect(JSON.stringify(result.body.data.detail)).toMatch(/key|quota|budget/i);
+  });
+
+  it('does not blame the credentials for a closed market', async () => {
+    // Saturday: ingestion legitimately skips for a calendar reason, which is a
+    // different fact from an exhausted key pool and must be reported as such.
+    const result = await withPinnedClock('2026-01-10T12:00:00.000Z', () =>
+      api('/admin/ingest/run', { method: 'POST', headers: admin }),
+    );
+    expect(result.status).toBe(200);
+    expect(result.body.data.exhausted).toBe(false);
+    expect(result.body.data.detail.join(' ')).toMatch(/market closed/i);
+  });
+
+  it('refuses to promote a candidate the gates rejected', async () => {
+    const candidate = await insertModelVersion(harness.client, {
+      version: 'relay-blocked-candidate',
+      datasetChecksum: 'checksum-blocked',
+      datasetSize: 300,
+      datasetFrom: '2026-01-01T00:00:00.000Z',
+      datasetTo: '2026-02-01T00:00:00.000Z',
+      featureNames: ['bias'],
+      hyper: {},
+      parameters: {},
+      metrics: {},
+      walkForward: [],
+      baselines: {},
+      promotion: { promote: false, summary: 'Keeping the current model — failed gates: baseline_skill' },
+    });
+    const path = `/admin/models/${candidate.id}/promote`;
+    const blocked = await api(path, { method: 'POST', headers: admin });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('promotion_blocked');
+    expect(blocked.body.error.message).toMatch(/baseline_skill/);
+
+    // An override must be deliberate and explained.
+    const unexplained = await api(path, {
+      method: 'POST',
+      headers: { ...admin, 'content-type': 'application/json' },
+      body: JSON.stringify({ override: true }),
+    });
+    expect(unexplained.status).toBe(400);
+
+    const overridden = await api(path, {
+      method: 'POST',
+      headers: { ...admin, 'content-type': 'application/json' },
+      body: JSON.stringify({ override: true, reason: 'operator review after a rejected holdout' }),
+    });
+    expect(overridden.status).toBe(200);
+    expect(overridden.body.data.promoted).toBe(true);
+    const stored = (await listModelVersions(harness.client, 10)).find((v) => v.id === candidate.id);
+    expect(stored?.status).toBe('CHAMPION');
+    expect(stored?.promotion.override).toBe(true);
+    expect(String(stored?.promotion.reason)).toMatch(/operator review/);
+  });
+
+  it('promotes a candidate whose stored decision passed', async () => {
+    const candidate = await insertModelVersion(harness.client, {
+      version: 'relay-approved-candidate',
+      datasetChecksum: 'checksum-approved',
+      datasetSize: 400,
+      datasetFrom: '2026-01-01T00:00:00.000Z',
+      datasetTo: '2026-02-15T00:00:00.000Z',
+      featureNames: ['bias'],
+      hyper: {},
+      parameters: {},
+      metrics: {},
+      walkForward: [],
+      baselines: {},
+      promotion: { promote: true, summary: 'Promoting relay-approved-candidate: all gates passed.' },
+    });
+    const result = await api(`/admin/models/${candidate.id}/promote`, { method: 'POST', headers: admin });
+    expect(result.status).toBe(200);
+    expect(result.body.data.promoted).toBe(true);
   });
 
   it('rejects a body larger than the limit', async () => {

@@ -36,7 +36,11 @@ export interface PerformanceSummary {
   sharpe: number;
   maxDrawdownPips: number;
   avgConfidence: number | null;
-  /** Confidence calibration gap: observed win rate minus mean confidence. */
+  /**
+   * Confidence calibration gap on the decisive cohort: observed win rate minus
+   * the mean confidence of those SAME signals. Unresolved rows are excluded
+   * from both sides so the two numbers describe one population.
+   */
   calibrationGap: number | null;
   avgUnresolvedRate: number;
 }
@@ -66,7 +70,10 @@ export function summarize(signals: Pick<SignalRecord, 'outcome' | 'realizedPips'
     maxDd = Math.max(maxDd, peak - running);
   }
   const accuracy = decisive === 0 ? null : wins.length / decisive;
-  const confidenceValues = signals.filter((s) => typeof s.confidence === 'number').map((s) => s.confidence);
+  const decisiveSignals = signals.filter((s) => s.outcome === 'WIN' || s.outcome === 'LOSS');
+  const confidenceValues = decisiveSignals
+    .filter((s) => typeof s.confidence === 'number')
+    .map((s) => s.confidence);
   const avgConfidence = confidenceValues.length === 0 ? null : mean(confidenceValues);
 
   return {
@@ -160,15 +167,31 @@ export function bySession(signals: SignalRecord[]): PerformanceBreakdown[] {
   return groupBy(signals, (s) => s.context?.session ?? 'UNKNOWN');
 }
 
+export interface ConfidenceBin {
+  lower: number;
+  upper: number;
+  /** Rows whose win rate is actually reported: decisive outcomes only. */
+  count: number;
+  /** Every row that fell in the band, including unresolved and draws. */
+  sampleSize: number;
+  meanConfidence: number;
+  /**
+   * Observed win rate, or `null` when the bin holds no decisive outcome.
+   *
+   * Reporting 0 for "no evidence yet" is the one way a calibration table can
+   * actively mislead: an empty high-confidence bin then reads as "wins 0% of
+   * the time" instead of "we do not know".
+   */
+  observedWinRate: number | null;
+}
+
 /**
  * Confidence calibration: bins of predicted confidence against realised win
- * rate, using only decisive outcomes so draws cannot flatter the curve.
+ * rate, using only decisive outcomes so draws and unresolved rows cannot
+ * flatter (or deflate) the curve.
  */
-export function confidenceCalibration(
-  signals: SignalRecord[],
-  binCount = 5,
-): { lower: number; upper: number; count: number; meanConfidence: number; observedWinRate: number }[] {
-  const bins: { lower: number; upper: number; count: number; meanConfidence: number; observedWinRate: number }[] = [];
+export function confidenceCalibration(signals: SignalRecord[], binCount = 5): ConfidenceBin[] {
+  const bins: ConfidenceBin[] = [];
   for (let b = 0; b < binCount; b += 1) {
     const lower = b / binCount;
     const upper = (b + 1) / binCount;
@@ -176,16 +199,16 @@ export function confidenceCalibration(
       (s) => s.confidence >= lower && (b === binCount - 1 ? s.confidence <= upper : s.confidence < upper),
     );
     const decisive = inBin.filter((s) => s.outcome === 'WIN' || s.outcome === 'LOSS');
-    if (inBin.length === 0) {
-      bins.push({ lower, upper, count: 0, meanConfidence: 0, observedWinRate: 0 });
-      continue;
-    }
     bins.push({
       lower,
       upper,
-      count: inBin.length,
-      meanConfidence: Number(mean(inBin.map((s) => s.confidence)).toFixed(4)),
-      observedWinRate: decisive.length === 0 ? 0 : Number((decisive.filter((s) => s.outcome === 'WIN').length / decisive.length).toFixed(4)),
+      count: decisive.length,
+      sampleSize: inBin.length,
+      meanConfidence: inBin.length === 0 ? 0 : Number(mean(inBin.map((s) => s.confidence)).toFixed(4)),
+      observedWinRate:
+        decisive.length === 0
+          ? null
+          : Number((decisive.filter((s) => s.outcome === 'WIN').length / decisive.length).toFixed(4)),
     });
   }
   return bins;

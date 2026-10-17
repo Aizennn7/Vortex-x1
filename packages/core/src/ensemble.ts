@@ -10,6 +10,7 @@
 import { buildFeatures, computeContext } from './features.js';
 import { instrumentMeta } from './instruments.js';
 import { REGIME_WEIGHTS } from './regime.js';
+import { redactString } from './secrets.js';
 import { STRATEGY_NAMES, runStrategies, type StrategyContext } from './strategies.js';
 import { clamp } from './indicators.js';
 import type {
@@ -126,7 +127,8 @@ export function evaluatePrediction(params: {
     snapshot.dataQuality === 'OK',
     snapshot.dataQuality === 'OK' ? 'fresh, gap-free data' : `data quality is ${snapshot.dataQuality}`,
   );
-  addGate('spread', snapshot.spreadOk, `spread ${snapshot.spreadPips.toFixed(2)} / max ${options.maxSpreadPips}`);
+  const spread = Number.isFinite(snapshot.spreadPips) ? snapshot.spreadPips.toFixed(2) : 'unknown';
+  addGate('spread', snapshot.spreadOk && Number.isFinite(snapshot.spreadPips), `spread ${spread} / max ${options.maxSpreadPips}`);
   addGate(
     'regime_confidence',
     regime.regime !== 'UNKNOWN' && regime.confidence >= 0.35,
@@ -161,7 +163,10 @@ export function evaluatePrediction(params: {
         confidence: weightedConfidence,
       });
       const p = options.model.predict(features);
-      if (Number.isFinite(p)) {
+      // A probability outside [0, 1] is a contract violation, not a number to
+      // clamp silently: ignoring it leaves the rule ensemble in charge and
+      // makes the defect visible to the operator.
+      if (Number.isFinite(p) && p >= 0 && p <= 1) {
         modelProbability = clamp(p);
         modelVersionId = options.model.versionId;
         const modelWeight = clamp(options.modelWeight ?? 0.35, 0, 0.6);
@@ -174,10 +179,18 @@ export function evaluatePrediction(params: {
           modelProbability >= 0.5,
           `model P(${combined.direction}) = ${modelProbability.toFixed(3)}`,
         );
+      } else {
+        const rendered = typeof p === 'number' ? String(p) : typeof p;
+        warnings.push('model_invalid_output');
+        addGate('model_agreement', false, `model returned an unusable probability (${rendered})`);
+        reasons.push('model output ignored: expected a probability in [0, 1]');
       }
     } catch (error) {
       warnings.push('model_error');
-      reasons.push(`model unavailable: ${(error as Error).message}`);
+      // Model errors can embed request URLs or key fragments; nothing reaches
+      // the stored signal until it has passed the shared redaction filter.
+      const detail = redactString((error as Error)?.message ?? String(error)).slice(0, 200);
+      reasons.push(`model unavailable: ${detail}`);
     }
   }
 
@@ -202,15 +215,25 @@ export function evaluatePrediction(params: {
     hasHardFail || belowThreshold || combined.direction === 'NO_TRADE' ? 'NO_TRADE' : combined.direction;
 
   if (decision === 'NO_TRADE') {
-    reasons.unshift(
-      `NO-TRADE: ${gates.filter((g) => !g.passed).map((g) => g.gate).join(', ') || 'no directional consensus'}`,
-    );
+    // Abstention is a first-class outcome: the failed gate names are the
+    // machine-readable reason, and every signal built from this evaluation
+    // carries them into the database.
+    const abstainReason =
+      gates
+        .filter((g) => !g.passed)
+        .map((g) => g.gate)
+        .join(', ') || 'no directional consensus';
+    reasons.unshift(`NO-TRADE: ${abstainReason}`);
+    addGate('abstained', false, abstainReason);
   }
 
   return {
     result: {
       decision,
-      confidence: decision === 'NO_TRADE' ? Number(confidence.toFixed(4)) : Number(confidence.toFixed(4)),
+      // `confidence` is a 0..1 ranking score for the ensemble's own call — it is
+      // NOT a probability. `modelProbability` is the only calibrated number in
+      // this result, and it is null when no model is loaded.
+      confidence: Number(confidence.toFixed(4)),
       votes,
       reasons,
       warnings: [...new Set(warnings)],

@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  DEFAULT_PROMOTION_CRITERIA,
   auditDataset,
   baselineMetrics,
   buildDataset,
@@ -28,9 +29,11 @@ import {
   evaluate,
   learnStrategyWeights,
   predictLogistic,
+  shouldRetrain,
   trainLogistic,
   walkForward,
   type Dataset,
+  type PromotionCriteria,
   type ResolvedRecord,
   type TrainingSample,
 } from '@vortex/core';
@@ -38,6 +41,7 @@ import {
   finishLearningRun,
   getChampion,
   insertModelVersion,
+  listLearningRuns,
   listResolvedForLearning,
   promoteModel,
   recordArtifact,
@@ -58,6 +62,41 @@ export interface LearningSummary {
   promoted: boolean;
   summary: string;
   walkForwardAccuracy: number[];
+  /** Embargo actually applied between chronologically adjacent splits, seconds. */
+  embargoSeconds: number;
+  /** Rows removed by the embargo at the validation/test boundaries. */
+  embargoedRows: { validation: number; test: number };
+  /** Which holdout the reported metrics came from. */
+  evaluationSet: 'test' | 'validation' | 'none';
+  skipped: boolean;
+}
+
+/** Bounded by the free-tier runner: a dataset is refit only when it changed. */
+const MIN_TRAIN_SAMPLES = 40;
+/**
+ * Derived from the documented gate, never re-typed locally: a local constant
+ * is how a 40-row holdout requirement quietly became 20. This job has no
+ * setting that can lower the floor.
+ */
+const MIN_EVALUATION_SAMPLES = DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples;
+
+/**
+ * The promotion criteria this worker actually applies. Exported so tests can
+ * prove that no local constant weakens the documented gates.
+ */
+export function learningPromotionCriteria(cfg: {
+  trainMinSamples: number;
+  promotionMinAccuracy: number;
+  promotionMinAuc: number;
+  promotionMaxLogLossRegression: number;
+}): Partial<PromotionCriteria> {
+  return {
+    minSamples: cfg.trainMinSamples,
+    minEvaluationSamples: MIN_EVALUATION_SAMPLES,
+    minAccuracy: cfg.promotionMinAccuracy,
+    minAuc: cfg.promotionMinAuc,
+    maxLogLossRegression: cfg.promotionMaxLogLossRegression,
+  };
 }
 
 export async function runLearningCycle(runtime: WorkerRuntime, now = new Date()): Promise<LearningSummary> {
@@ -71,6 +110,10 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
     promoted: false,
     summary: '',
     walkForwardAccuracy: [],
+    embargoSeconds: 0,
+    embargoedRows: { validation: 0, test: 0 },
+    evaluationSet: 'none',
+    skipped: false,
   };
   if (!cfg.learningEnabled) {
     summary.summary = 'learning is disabled by configuration';
@@ -114,15 +157,21 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       runtime.models.invalidate();
     }
 
+    // Labels are only comparable at one horizon: rows recorded against a
+    // different (or unverifiable) horizon are excluded and counted rather than
+    // pooled into a target whose meaning changed.
     const dataset: Dataset = buildDataset(records, {
       checksum: (input) => createHash('sha256').update(input).digest('hex'),
+      expectedHorizonSeconds: cfg.signalHorizonSeconds,
     });
     summary.datasetSize = dataset.samples.length;
     summary.checksum = dataset.checksum;
     summary.exclusions = { ...dataset.exclusions };
 
     const sourceCounts = tallyOutcomes(records);
-    const audit = auditDataset(dataset, cfg.trainMinSamples);
+    // The cycle's own clock drives the future-timestamp check so a replayed
+    // run judges the dataset against the instant it is modelling.
+    const audit = auditDataset(dataset, cfg.trainMinSamples, now.getTime());
     if (!audit.ok) {
       await finishLearningRun(db, {
         id: runId,
@@ -133,16 +182,70 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
         datasetTo: dataset.to,
         exclusions: { ...dataset.exclusions },
         sourceCounts,
+        error: `dataset audit failed: ${audit.issues.slice(0, 3).join('; ')}`,
       });
       summary.summary = `no training run: ${audit.issues.slice(0, 3).join('; ')}`;
+      summary.skipped = true;
       return summary;
     }
 
-    const split = chronologicalSplit(dataset.samples, { train: 0.6, validation: 0.2, test: 0.2 }, 60);
+    // Idempotency + resource bound: a byte-identical dataset cannot produce a
+    // different model, so an unchanged dataset is not refit. The run is still
+    // recorded (as SKIPPED, with the checksum) so the history stays complete.
+    const previousRuns = await listLearningRuns(db, 50);
+    const retrain = shouldRetrain({
+      datasetChecksum: dataset.checksum,
+      datasetSize: dataset.samples.length,
+      previousRuns,
+    });
+    if (!retrain.retrain) {
+      await finishLearningRun(db, {
+        id: runId,
+        status: 'SKIPPED',
+        datasetChecksum: dataset.checksum,
+        datasetSize: dataset.samples.length,
+        datasetFrom: dataset.from,
+        datasetTo: dataset.to,
+        exclusions: { ...dataset.exclusions },
+        sourceCounts,
+        error: retrain.reason,
+      });
+      summary.summary = `no training run: ${retrain.reason}`;
+      summary.skipped = true;
+      return summary;
+    }
+
+    // The embargo is one full prediction horizon: two rows closer than one
+    // horizon share outcome candles, so a shorter window would leak outcomes
+    // across the split. The dataset is filtered to the configured horizon, so
+    // the configuration is authoritative here; an excluded row recorded at a
+    // different horizon must not inflate the window for the rows that remain.
+    const embargo = Math.max(60, Math.ceil(cfg.signalHorizonSeconds));
+    summary.embargoSeconds = embargo;
+
+    const split = chronologicalSplit(dataset.samples, { train: 0.6, validation: 0.2, test: 0.2 }, embargo);
+    summary.embargoedRows = { ...split.embargoed };
+    if (split.train.length < MIN_TRAIN_SAMPLES) {
+      await finishLearningRun(db, {
+        id: runId,
+        status: 'SKIPPED',
+        datasetChecksum: dataset.checksum,
+        datasetSize: dataset.samples.length,
+        datasetFrom: dataset.from,
+        datasetTo: dataset.to,
+        exclusions: { ...dataset.exclusions },
+        sourceCounts,
+        error: `only ${split.train.length} training rows after the ${embargo}s embargo (need ${MIN_TRAIN_SAMPLES})`,
+      });
+      summary.summary = `no training run: only ${split.train.length} training rows survive the ${embargo}s embargo`;
+      summary.skipped = true;
+      return summary;
+    }
+
     const folds = walkForward(dataset.samples, {
       folds: 4,
-      minTrainSize: Math.max(40, Math.floor(dataset.samples.length * 0.4)),
-      embargoSeconds: 60,
+      minTrainSize: Math.max(MIN_TRAIN_SAMPLES, Math.floor(dataset.samples.length * 0.4)),
+      embargoSeconds: embargo,
       train: (trainSamples) => {
         const foldModel = trainLogistic(trainSamples, {
           trainedAt: now.toISOString(),
@@ -157,7 +260,10 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       },
     });
 
-    const model = trainLogistic(split.train.length >= 40 ? split.train : dataset.samples, {
+    // The candidate is fitted on the training block ONLY. Falling back to the
+    // full dataset here would train on the holdout and invalidate every metric
+    // below, so an undersized training block is refused upstream instead.
+    const model = trainLogistic(split.train, {
       trainedAt: now.toISOString(),
       datasetChecksum: dataset.checksum,
       version: `candidate-${now.toISOString().slice(0, 19)}`,
@@ -167,13 +273,35 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       balanceClasses: true,
     });
 
-    const testSet: TrainingSample[] = split.test.length >= 20 ? split.test : split.validation;
+    // Holdout selection is explicit and recorded: the test block when it is
+    // large enough, otherwise the validation block (which is still never
+    // trained on). Metrics are always out-of-sample.
+    const evaluationSet: LearningSummary['evaluationSet'] =
+      split.test.length >= MIN_EVALUATION_SAMPLES ? 'test' : split.validation.length >= MIN_EVALUATION_SAMPLES ? 'validation' : 'none';
+    summary.evaluationSet = evaluationSet;
+    const testSet: TrainingSample[] = evaluationSet === 'test' ? split.test : evaluationSet === 'validation' ? split.validation : [];
+    if (testSet.length === 0) {
+      await finishLearningRun(db, {
+        id: runId,
+        status: 'SKIPPED',
+        datasetChecksum: dataset.checksum,
+        datasetSize: dataset.samples.length,
+        datasetFrom: dataset.from,
+        datasetTo: dataset.to,
+        exclusions: { ...dataset.exclusions },
+        sourceCounts,
+        error: `no out-of-sample rows after the ${embargo}s embargo (test ${split.test.length}, validation ${split.validation.length})`,
+      });
+      summary.summary = `no training run: no out-of-sample rows survive the ${embargo}s embargo`;
+      summary.skipped = true;
+      return summary;
+    }
     const testProbabilities = testSet.map((s) => predictLogistic(model, s.features));
     const testMetrics = evaluate(
       testSet.map((s) => s.label),
       testProbabilities,
     );
-    const baselines = baselineMetrics(testSet.length > 0 ? testSet : dataset.samples);
+    const baselines = baselineMetrics(testSet);
     const champion = await getChampion(db);
     const decision = decidePromotion({
       candidate: {
@@ -185,16 +313,16 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       champion: champion
         ? { metrics: champion.metrics as never, version: champion.version }
         : null,
-      criteria: {
-        minSamples: cfg.trainMinSamples,
-        minAccuracy: cfg.promotionMinAccuracy,
-        minAuc: cfg.promotionMinAuc,
-        maxLogLossRegression: cfg.promotionMaxLogLossRegression,
-      },
+      baseline: baselines.majority,
+      criteria: learningPromotionCriteria(cfg),
     });
 
     summary.walkForwardAccuracy = folds.map((f) => Number(f.metrics.accuracy.toFixed(4)));
-    const artifact = await persistArtifact(runtime, model, dataset, folds);
+    const artifact = await persistArtifact(runtime, model, dataset, folds, {
+      embargoSeconds: embargo,
+      evaluationSet,
+      evaluationRows: testSet.length,
+    });
 
     const candidate = await insertModelVersion(db, {
       version: model.version,
@@ -211,7 +339,9 @@ export async function runLearningCycle(runtime: WorkerRuntime, now = new Date())
       baselines: baselines.majority as unknown as Record<string, unknown>,
       promotion: decision as unknown as Record<string, unknown>,
       artifactChecksum: artifact.checksum,
-      notes: `trained on ${dataset.samples.length} labelled outcomes; ${JSON.stringify(dataset.exclusions)}`,
+      notes:
+        `trained on ${split.train.length} of ${dataset.samples.length} labelled outcomes ` +
+        `(embargo ${embargo}s; ${evaluationSet} holdout of ${testSet.length} rows); ${JSON.stringify(dataset.exclusions)}`,
     });
     summary.candidateVersion = candidate.version;
 
@@ -286,10 +416,18 @@ async function persistArtifact(
   model: unknown,
   dataset: Dataset,
   folds: unknown[],
+  extra: Record<string, unknown> = {},
 ): Promise<{ path: string; checksum: string }> {
   const dir = process.env.VORTEX_ARTIFACT_DIR ?? join(process.cwd(), 'artifacts');
   const payload = JSON.stringify(
-    { model, datasetChecksum: dataset.checksum, datasetSize: dataset.samples.length, folds },
+    {
+      model,
+      datasetChecksum: dataset.checksum,
+      datasetSize: dataset.samples.length,
+      featureNames: dataset.featureNames,
+      folds,
+      ...extra,
+    },
     null,
     2,
   );

@@ -94,7 +94,7 @@ export interface MarketSnapshot {
   ageSeconds: number;
   /** True when the spread is within the configured tolerance. */
   spreadOk: boolean;
-  dataQuality: 'OK' | 'STALE' | 'GAPPY' | 'INSUFFICIENT';
+  dataQuality: 'OK' | 'STALE' | 'GAPPY' | 'INSUFFICIENT' | 'FUTURE_DATA';
 }
 
 export interface PredictionContext {

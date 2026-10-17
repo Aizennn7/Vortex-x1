@@ -30,6 +30,11 @@ export interface TwelveDataOptions {
   maxAttempts?: number;
   fetchImpl?: typeof fetch;
   onRequest?: (info: { url: string; status: number; durationMs: number; attempt: number }) => void;
+  /**
+   * Injectable clock used to decide whether a candle's window has closed.
+   * Tests pass a fixed clock so `isFinal` is deterministic.
+   */
+  nowMs?: () => number;
 }
 
 const INTERVAL_MAP: Record<Timeframe, string> = {
@@ -76,6 +81,7 @@ export class TwelveDataProvider implements MarketDataProvider {
   private readonly maxAttempts: number;
   private readonly fetchImpl: typeof fetch;
   private readonly onRequest?: TwelveDataOptions['onRequest'];
+  private readonly nowMs: () => number;
 
   constructor(options: TwelveDataOptions = {}) {
     this.baseUrl = (options.baseUrl ?? 'https://api.twelvedata.com').replace(/\/$/, '');
@@ -83,6 +89,7 @@ export class TwelveDataProvider implements MarketDataProvider {
     this.maxAttempts = Math.max(1, options.maxAttempts ?? 3);
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onRequest = options.onRequest;
+    this.nowMs = options.nowMs ?? (() => Date.now());
   }
 
   /** Exposed for the control centre's "verify key" action. */
@@ -130,19 +137,25 @@ export class TwelveDataProvider implements MarketDataProvider {
     for (const row of values) {
       const openTime = normalizeDatetime(row.datetime);
       if (!openTime) continue;
+      const open = Number(row.open);
+      const high = Number(row.high);
+      const low = Number(row.low);
+      const close = Number(row.close);
+      if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) continue;
+      if (high < low || high < Math.max(open, close) - 1e-12 || low > Math.min(open, close) + 1e-12) continue;
       candles.push({
         pair: request.pair,
         timeframe: request.timeframe,
         openTime,
-        open: Number(row.open),
-        high: Number(row.high),
-        low: Number(row.low),
-        close: Number(row.close),
+        open,
+        high,
+        low,
+        close,
         volume: row.volume === undefined || row.volume === '' ? null : Number(row.volume),
         provider: this.name,
         // A candle is final when its window has closed. The provider returns
         // the in-progress bar first, so mark by timestamp, not by position.
-        isFinal: new Date(openTime).getTime() + intervalSeconds * 1000 <= Date.now(),
+        isFinal: new Date(openTime).getTime() + intervalSeconds * 1000 <= this.nowMs(),
         revision: 1,
       });
     }

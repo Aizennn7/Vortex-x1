@@ -16,15 +16,16 @@ import {
   activateDue,
   getAccount,
   insertSignal,
+  listAlerts,
   listKeys,
   listPositions,
   listSignals,
   markPublished,
   updateKey,
 } from '@vortex/db';
-import { createProvider } from '@vortex/provider';
-import { createHarness, seedKey, simulatedProvider } from './helpers.js';
-import { runIngestionCycle } from '../src/jobs/ingest.js';
+import { ProviderError, createProvider } from '@vortex/provider';
+import { createHarness, seedKey, simulatedProvider, stubProvider } from './helpers.js';
+import { runIngestionCycle, runIngestionJob } from '../src/jobs/ingest.js';
 import { runSignalCycle } from '../src/jobs/signals.js';
 import { runSettlementCycle } from '../src/jobs/settle.js';
 import { runMaintenance } from '../src/jobs/maintenance.js';
@@ -139,6 +140,80 @@ describe('worker pipeline', () => {
       await h.close();
     }
   });
+
+  /**
+   * A provider that returns only the newest few bars cannot backfill a hole
+   * that opened while the worker was down. Every fetched batch is internally
+   * contiguous, so the batch validator reports no gaps — the defect this test
+   * pins is that the quality row used to say CONNECTED and `gapsDetected`
+   * stayed at zero through a real coverage loss.
+   */
+  it('reports a coverage hole between batches as DEGRADED instead of CONNECTED', async () => {
+    const startMs = Date.parse('2026-03-03T10:00:00.000Z');
+    let nowMs = startMs;
+    const MIN = 60_000;
+    const bar = (pair: string, openMs: number) => {
+      const base = 1.1 + (openMs - startMs) / MIN / 1_000_000;
+      return {
+        pair,
+        timeframe: 'M1' as const,
+        openTime: new Date(openMs).toISOString(),
+        open: base,
+        high: base + 0.0002,
+        low: base - 0.0001,
+        close: base + 0.0001,
+        provider: 'edge-case',
+        isFinal: true,
+      };
+    };
+    let tailBars = 0;
+    const provider = {
+      name: 'edge-case',
+      synthetic: false,
+      async fetchTimeSeries(request: { pair: string }) {
+        const newestOpen = Math.floor(nowMs / MIN) * MIN - MIN;
+        const bars = Array.from({ length: tailBars || 120 }, (_, i) =>
+          bar(request.pair, newestOpen - (tailBars ? tailBars - 1 - i : 119 - i) * MIN),
+        );
+        return { pair: request.pair, timeframe: 'M1', candles: bars, creditsUsed: 0 };
+      },
+      async fetchQuote() {
+        throw new Error('not used');
+      },
+    } as never;
+
+    const h = await createHarness({ provider, env: { VORTEX_PAIRS: 'EUR/USD' } });
+    try {
+      await withKeys(h, async () => {
+        const first = await runIngestionCycle(h.runtime, new Date(nowMs));
+        expect(first.pairsFetched).toBe(1);
+        expect(first.gapsDetected).toBe(0);
+        const connected = await h.client.query<{ status: string }>(
+          'select status from market_data_quality where pair = $1',
+          ['EUR/USD'],
+        );
+        expect(connected.rows[0]?.status).toBe('CONNECTED');
+
+        // The worker was away for 90 minutes; the provider now returns only
+        // the tail, so 85 trading minutes are simply not in the database.
+        nowMs += 90 * MIN;
+        tailBars = 5;
+        const second = await runIngestionCycle(h.runtime, new Date(nowMs));
+        expect(second.pairsFetched).toBe(1);
+        expect(second.gapsDetected).toBeGreaterThan(80);
+
+        const degraded = await h.client.query<{ status: string; gap_count: number; detail: string }>(
+          'select status, gap_count, detail from market_data_quality where pair = $1',
+          ['EUR/USD'],
+        );
+        expect(degraded.rows[0]?.status).toBe('DEGRADED');
+        expect(Number(degraded.rows[0]?.gap_count)).toBeGreaterThan(80);
+        expect(degraded.rows[0]?.detail ?? '').toMatch(/missing/);
+      });
+    } finally {
+      await h.close();
+    }
+  }, 120_000);
 
   it('leaves the door open: an unresolved settlement is deferred, not faked', async () => {
     const h = await createHarness();
@@ -271,6 +346,60 @@ describe('worker pipeline', () => {
       });
       const quality = await h.client.query<{ detail: string | null }>('select detail from market_data_quality limit 1');
       expect(String(quality.rows[0]?.detail ?? '')).toMatch(/simulat|synthetic/i);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('ingestion failure reporting', () => {
+  it('reports a provider outage as FAILED, and refuses the alert-resolving SUCCEEDED', async () => {
+    const h = await createHarness({
+      provider: stubProvider({
+        timeSeries: async () => {
+          throw new ProviderError({ status: 503, message: 'provider transient error' });
+        },
+      }),
+    });
+    try {
+      await seedKey(h.client, { label: 'outage', minuteLimit: 60, dayLimit: 600 });
+      h.runtime.keyPool.invalidate();
+      const summary = await runIngestionCycle(h.runtime, T_INGEST);
+      expect(summary.pairsFetched).toBe(0);
+      expect(summary.pairsFailed).toBeGreaterThan(0);
+
+      const job = await runIngestionJob(h.runtime, T_INGEST, { alertCode: 'ingest-failing' });
+      expect(job.status).toBe('FAILED');
+      expect(Number(job.detail?.pairsFailed ?? 0)).toBeGreaterThan(0);
+
+      // A failed cycle must raise the alert, not clear it.
+      const alerts = await listAlerts(h.client, false, 10);
+      const alert = alerts.find((a) => a.code === 'ingest-failing');
+      expect(alert).toBeDefined();
+      expect(alert?.detail ?? '').toMatch(/failed/i);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('still reports SKIPPED (not FAILED) when the quota is the reason', async () => {
+    const h = await createHarness({
+      provider: stubProvider({
+        timeSeries: async () => {
+          throw new ProviderError({ status: 429, message: 'too many requests' });
+        },
+      }),
+    });
+    try {
+      await seedKey(h.client, { label: 'throttled', minuteLimit: 1, dayLimit: 600 });
+      h.runtime.keyPool.invalidate();
+      const job = await runIngestionJob(h.runtime, T_INGEST, { alertCode: 'ingest-failing' });
+      // Every key is now cooling down or exhausted: deliberate degradation.
+      expect(['SKIPPED', 'FAILED']).toContain(job.status);
+      if (job.status === 'FAILED') {
+        const alerts = await listAlerts(h.client, false, 10);
+        expect(alerts.some((a) => a.code === 'ingest-failing')).toBe(true);
+      }
     } finally {
       await h.close();
     }

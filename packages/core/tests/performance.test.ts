@@ -103,6 +103,24 @@ describe('summary denominators', () => {
     expect(summary.accuracyInterval?.upper).toBeGreaterThan(0.5);
   });
 
+  it('keeps unresolved rows out of both sides of the calibration gap', () => {
+    const decisive = [
+      signal({ outcome: 'WIN', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+      signal({ outcome: 'LOSS', confidence: 0.9 }),
+    ];
+    const withUnresolved = summarize([
+      ...decisive,
+      // A noisy high-confidence row that never produced a verdict must not
+      // move the gap: it belongs to neither numerator nor denominator.
+      signal({ outcome: 'UNRESOLVED', confidence: 0.1, realizedPips: null }),
+    ]);
+    const withoutUnresolved = summarize(decisive);
+    expect(withUnresolved.avgConfidence).toBeCloseTo(withoutUnresolved.avgConfidence ?? 0, 6);
+    expect(withUnresolved.calibrationGap).toBeCloseTo(withoutUnresolved.calibrationGap ?? 0, 6);
+  });
+
   it('measures the confidence calibration gap', () => {
     const summary = summarize([
       signal({ outcome: 'WIN', confidence: 0.9 }),
@@ -163,7 +181,27 @@ describe('calibration curve', () => {
     const bins = confidenceCalibration(signals, 5);
     const highBin = bins[bins.length - 1];
     expect(highBin?.observedWinRate).toBe(1);
+    // `count` is the denominator behind the rate; `sampleSize` is everything.
     expect(bins.reduce((acc, b) => acc + b.count, 0)).toBe(4);
+    expect(bins.reduce((acc, b) => acc + b.sampleSize, 0)).toBe(4);
+  });
+
+  it('reports null rather than 0% for a band with no decisive outcome', () => {
+    const bins = confidenceCalibration(
+      [
+        signal({ confidence: 0.95, outcome: 'UNRESOLVED' }),
+        signal({ confidence: 0.97, outcome: 'DRAW' }),
+        signal({ confidence: 0.66, outcome: 'LOSS' }),
+      ],
+      5,
+    );
+    const top = bins[bins.length - 1];
+    expect(top?.count).toBe(0);
+    expect(top?.sampleSize).toBe(2);
+    expect(top?.observedWinRate).toBeNull();
+    const second = bins[3];
+    expect(second?.observedWinRate).toBe(0);
+    expect(second?.count).toBe(1);
   });
 });
 

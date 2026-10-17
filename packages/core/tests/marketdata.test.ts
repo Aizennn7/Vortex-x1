@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { isMarketOpen } from '../src/time.js';
 import {
   aggregate,
   findGaps,
   freshness,
   mergeCandles,
+  missingOpenSlots,
   normalizeBatch,
   onlyFinal,
   validateCandle,
@@ -245,5 +247,48 @@ describe('onlyFinal / merge / aggregate', () => {
     }));
     const gaps = findGaps(rows, '2026-01-05T10:00:00.000Z', '2026-01-05T10:02:00.000Z', 'M1');
     expect(gaps).toEqual(['2026-01-05T10:01:00.000Z']);
+  });
+});
+
+
+describe('missingOpenSlots', () => {
+  const MIN = 60_000;
+  const start = Date.parse('2026-03-03T10:00:00.000Z');
+  const slots = (n: number) => Array.from({ length: n }, (_, i) => start + i * MIN);
+
+  it('counts only slots that are absent', () => {
+    const present = slots(10).filter((_, i) => i !== 4 && i !== 5);
+    expect(missingOpenSlots(present, start, start + 9 * MIN)).toBe(2);
+  });
+
+  it('reports nothing for a complete window', () => {
+    expect(missingOpenSlots(slots(10), start, start + 9 * MIN)).toBe(0);
+  });
+
+  it('treats closed-market minutes as closure, not as data loss', () => {
+    // Saturday 2026-03-07 00:00 UTC -> Sunday 21:00 UTC is a full FX weekend.
+    const sat = Date.parse('2026-03-07T00:00:00.000Z');
+    const sun = Date.parse('2026-03-08T20:59:00.000Z');
+    const present: number[] = [];
+    for (let t = sat; t <= sun; t += MIN) {
+      if (isMarketOpen(t)) present.push(t);
+    }
+    expect(missingOpenSlots(present, sat, sun, 60, (ms) => isMarketOpen(ms))).toBe(0);
+    // The same window judged without a calendar is thousands of "gaps",
+    // which is exactly the false alarm this helper exists to prevent.
+    expect(missingOpenSlots(present, sat, sun)).toBeGreaterThan(2000);
+  });
+
+  it('still counts a hole inside trading hours', () => {
+    const opens = slots(120).filter((_, i) => i < 60 || i > 70);
+    const from = start;
+    const to = start + 119 * MIN;
+    expect(missingOpenSlots(opens, from, to, 60, () => true)).toBe(11);
+  });
+
+  it('bounds the walk instead of iterating over years', () => {
+    const ancient = Date.parse('2018-01-01T00:00:00.000Z');
+    const gaps = missingOpenSlots([], ancient, start, 60);
+    expect(gaps).toBeLessThanOrEqual((7 * 24 * 60) + 1);
   });
 });

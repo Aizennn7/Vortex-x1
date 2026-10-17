@@ -15,6 +15,7 @@ import {
   listAlerts,
   listDeliveries,
   listHealth,
+  listLearningRuns,
   listQuality,
   listSignals,
   pruneCandles,
@@ -282,16 +283,45 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
 
   const engineVersionId = runtime.config.engineVersion;
   const champion = await runtime.models.champion();
+  // A failed learning run must be visible without reading the logs: the panel
+  // turns DEGRADED and the run's own error is quoted verbatim.
+  const learningRuns = await listLearningRuns(db, 5).catch(() => []);
+  const lastRun = learningRuns[0] ?? null;
+  const learningFailed = lastRun?.status === 'FAILED';
+  const learningStatus: ServiceStatus = !runtime.config.learningEnabled
+    ? 'DISCONNECTED'
+    : learningFailed
+      ? 'DEGRADED'
+      : 'CONNECTED';
+  const learningDetail = !runtime.config.learningEnabled
+    ? 'learning pipeline disabled by configuration'
+    : learningFailed
+      ? `last learning run failed at ${lastRun?.finishedAt ?? lastRun?.startedAt}: ${lastRun?.error ?? 'no error recorded'}`
+      : champion
+        ? `champion ${champion.version} trained on ${champion.trainedSamples ?? 'n/a'} samples` +
+          (lastRun ? ` · last run ${lastRun.status}${lastRun.datasetSize === null ? '' : ` on ${lastRun.datasetSize} labelled rows`}` : '')
+        : lastRun
+          ? `no champion model yet — last run ${lastRun.status}: ${lastRun.error ?? 'collecting labelled outcomes'}`
+          : 'no champion model yet — collecting labelled outcomes';
   await setComponentHealth(db, {
     component: 'learning',
-    status: runtime.config.learningEnabled ? 'CONNECTED' : 'DISCONNECTED',
-    detail: runtime.config.learningEnabled
-      ? champion
-        ? `champion ${champion.version} trained on ${champion.trainedSamples ?? 'n/a'} samples`
-        : 'no champion model yet — collecting labelled outcomes'
-      : 'learning pipeline disabled by configuration',
-    metadata: { engineVersion: engineVersionId, champion: champion?.version ?? null },
+    status: learningStatus,
+    detail: learningDetail,
+    metadata: {
+      engineVersion: engineVersionId,
+      champion: champion?.version ?? null,
+      lastRun: lastRun
+        ? {
+            status: lastRun.status,
+            startedAt: lastRun.startedAt,
+            finishedAt: lastRun.finishedAt,
+            datasetSize: lastRun.datasetSize,
+            reason: lastRun.error,
+          }
+        : null,
+    },
   });
+  summary.components.learning = learningStatus;
 
   /* --------------------------------------------------------- pruning */
   summary.pruned.candles = await pruneCandles(db, Number(process.env.VORTEX_CANDLE_RETENTION_DAYS ?? 45)).catch(() => 0);

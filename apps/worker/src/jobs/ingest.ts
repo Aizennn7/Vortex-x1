@@ -16,17 +16,20 @@ import {
   TIMEFRAME_SECONDS,
   instrumentMeta,
   isMarketOpen,
+  missingOpenSlots,
   toIso,
   type CandleInput,
   type Pair,
 } from '@vortex/core';
-import { listPairs, countGaps, syncPairs, upsertCandles, upsertQuality, type SqlClient } from '@vortex/db';
+import { getCandles, listPairs, syncPairs, upsertCandles, upsertQuality, type SqlClient } from '@vortex/db';
 import type { WorkerRuntime } from '../runtime.js';
 import { withJob, type WithJobOptions } from './job.js';
 
 export interface IngestSummary {
   pairsConsidered: number;
   pairsFetched: number;
+  /** Fetches that failed for a non-quota reason (timeout, 5xx, bad payload…). */
+  pairsFailed: number;
   candlesInserted: number;
   candlesUpdated: number;
   rejected: number;
@@ -62,6 +65,7 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
   const summary: IngestSummary = {
     pairsConsidered: 0,
     pairsFetched: 0,
+    pairsFailed: 0,
     candlesInserted: 0,
     candlesUpdated: 0,
     rejected: 0,
@@ -170,9 +174,11 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
     if (!result.ok || !result.value) {
       summary.detail.push(`${pair}: ${result.error ?? 'fetch failed'}`);
       if (result.exhausted) {
+        // Quota/cooldown: deliberate degradation, not a failure of this job.
         summary.exhausted = true;
         break;
       }
+      summary.pairsFailed += 1;
       continue;
     }
 
@@ -183,46 +189,67 @@ export async function runIngestionCycle(runtime: WorkerRuntime, now = new Date()
     summary.rejected += written.rejected;
     runtime.bump('candlesIngested', written.inserted + written.updated);
 
-    if (written.gaps.length > 0) {
-      const gapCheck = await countGaps(db, {
+    const newest = result.value.candles[result.value.candles.length - 1];
+    const expectedOpen = Math.floor(now.getTime() / 60_000) * 60_000 - 60_000;
+    const newestMs = newest ? new Date(newest.openTime).getTime() : 0;
+    const behindMinutes = newest ? Math.max(0, Math.round((expectedOpen - newestMs) / 60_000)) : 999;
+
+    /**
+     * Gaps BETWEEN batches are invisible to the batch validator: every fetch
+     * returns a window that is internally contiguous, so `written.gaps` is
+     * empty even after hours of lost coverage. That made the DEGRADED branch
+     * unreachable and left `gapsDetected` at zero through real outages.
+     *
+     * The check therefore spans the last stored candle (captured before the
+     * upsert) up to the boundary that should exist now, and counts only
+     * minutes the market was open — a weekend is a closure, not a data gap.
+     * The window is bounded to six hours so a long outage stays one cheap
+     * query while still reporting a non-zero gap.
+     */
+    const previousMs = lastTimes.get(pair) ? new Date(lastTimes.get(pair) as string).getTime() : null;
+    const windowEnd = expectedOpen;
+    const windowStart = Math.max(
+      (previousMs ?? newestMs) - TIMEFRAME_SECONDS.M1 * 1000,
+      windowEnd - 6 * 3600 * 1000,
+    );
+    let gaps = written.gaps.length;
+    if (windowEnd >= windowStart) {
+      const stored = await getCandles(db, {
         pair,
         timeframe: 'M1',
-        from: toIso(now.getTime() - 24 * 3600 * 1000),
-        to: toIso(now),
-        stepSeconds: 60,
+        from: toIso(windowStart),
+        to: toIso(windowEnd),
+        limit: 500,
       });
-      summary.gapsDetected += gapCheck.gaps;
-      qualityUpdates.push({
-        pair,
-        timeframe: 'M1',
-        status: written.gaps.length > 0 || gapCheck.gaps > 0 ? 'DEGRADED' : 'CONNECTED',
-        ageSeconds: 0,
-        gapCount: gapCheck.gaps,
-        lastCandleAt: result.value.candles.length
-          ? toIso(result.value.candles[result.value.candles.length - 1]!.openTime)
-          : null,
-        expectedAt: toIso(Math.floor(now.getTime() / 60_000) * 60_000 - 60_000),
-        detail:
-          (written.gaps.length > 0
-            ? `gap inside the fetched window (${written.gaps.length} candle(s)) — queued for backfill`
-            : 'fresh') + feedLabel,
-      });
-    } else {
-      const newest = result.value.candles[result.value.candles.length - 1];
-      const expectedOpen = Math.floor(now.getTime() / 60_000) * 60_000 - 60_000;
-      const newestMs = newest ? new Date(newest.openTime).getTime() : 0;
-      const behindMinutes = newest ? Math.max(0, Math.round((expectedOpen - newestMs) / 60_000)) : 999;
-      qualityUpdates.push({
-        pair,
-        timeframe: 'M1',
-        status: behindMinutes <= 1 ? 'CONNECTED' : behindMinutes <= 5 ? 'DEGRADED' : 'DISCONNECTED',
-        ageSeconds: newest ? Math.round((now.getTime() - (newestMs + 60_000)) / 1000) : null,
-        gapCount: 0,
-        lastCandleAt: newest ? toIso(newest.openTime) : null,
-        expectedAt: toIso(expectedOpen),
-        detail: (behindMinutes <= 1 ? 'fresh' : `${behindMinutes} minute(s) behind the expected boundary`) + feedLabel,
-      });
+      gaps = Math.max(
+        gaps,
+        missingOpenSlots(
+          stored.map((c) => new Date(c.openTime).getTime()),
+          windowStart,
+          windowEnd,
+          TIMEFRAME_SECONDS.M1,
+          (ms) => isMarketOpen(new Date(ms)),
+        ),
+      );
     }
+    summary.gapsDetected += gaps;
+
+    const status = gaps > 0 ? 'DEGRADED' : behindMinutes <= 1 ? 'CONNECTED' : behindMinutes <= 5 ? 'DEGRADED' : 'DISCONNECTED';
+    qualityUpdates.push({
+      pair,
+      timeframe: 'M1',
+      status,
+      ageSeconds: newest ? Math.round((now.getTime() - (newestMs + 60_000)) / 1000) : null,
+      gapCount: gaps,
+      lastCandleAt: newest ? toIso(newest.openTime) : null,
+      expectedAt: toIso(expectedOpen),
+      detail:
+        (gaps > 0
+          ? `${gaps} open-market minute(s) missing in the last ${Math.round((windowEnd - windowStart) / 60_000)}min — the next pass requests the whole gap`
+          : behindMinutes <= 1
+            ? 'fresh'
+            : `${behindMinutes} minute(s) behind the expected boundary`) + feedLabel,
+    });
   }
 
   // Pairs we could not touch this cycle still need an honest freshness row.
@@ -267,6 +294,17 @@ export async function runIngestionJob(
     slot,
     async () => {
       const summary = await runIngestionCycle(runtime, now);
+      // Reporting an outage as SUCCEEDED would silently resolve the
+      // ingest-failing alert, so a cycle that attempted fetches and completed
+      // none of them is recorded as FAILED with the per-pair reasons.
+      const attempted = summary.pairsFetched + summary.pairsFailed;
+      if (attempted > 0 && summary.pairsFetched === 0 && !summary.exhausted) {
+        return {
+          status: 'FAILED',
+          error: `all ${attempted} provider fetch(es) failed: ${summary.detail.slice(0, 3).join('; ')}`,
+          detail: { ...summary },
+        };
+      }
       return { status: summary.exhausted ? 'SKIPPED' : 'SUCCEEDED', detail: { ...summary } };
     },
     { staleAfterSeconds: 180, alertCode: 'ingest-failing', ...options },

@@ -67,7 +67,7 @@ GitHub Actions is a batch CI scheduler, **not a continuous 24/7 real-time daemon
 | `packages/core` | Config schema (`FREE_TIER_DEFAULT_PAIRS`), 28-feature vector, 5 rule strategies, Platt-calibrated logistic model, walk-forward validator, paper-trade cost model, secret redaction. |
 | `packages/db` | Postgres / PGlite client, forward-only migration runner with SHA-256 drift detection (`0001`–`0007`), repositories for candles, signals, keys (AES-256-GCM), quotas, locks, jobs, health, and learning. |
 | `packages/provider` | Twelve Data HTTP client and deterministic `SimulatedProvider`. |
-| `apps/worker` | One-shot GitHub Actions job runner (`src/runner.ts`), admin CLI (`src/cli/admin.ts`), continuous scheduler (`src/scheduler.ts`), and optional local HTTP relay (`src/http.ts`). |
+| `apps/worker` | One-shot GitHub Actions job runner (`src/runner.ts`), admin CLI (`src/cli/admin.ts`), continuous scheduler (`src/scheduler.ts`), optional local HTTP relay (`src/http.ts`), and the shared model/learning registry summary (`src/services/registry.ts`) used by both the relay and the snapshot exporter. |
 | `apps/web` | Static React status board supporting Supabase `public_*` views, static `snapshot.json`, and local relay mode. |
 | `supabase/migrations` | Byte-identical mirror of `packages/db/migrations` for the Supabase CLI. |
 
@@ -82,7 +82,13 @@ npm ci
 npm run typecheck
 npm test
 npm run smoke
+npm run build:web && npm run guard:bundle
+npm run validate:workflows
 ```
+
+`guard:bundle` scans the built dashboard for secret shapes and loopback API
+bases; `validate:workflows` checks the GitHub Actions definitions. Neither needs
+credentials or network access beyond `npm ci`.
 
 Run a one-shot pipeline cycle locally against embedded Postgres (`PGlite`) and the deterministic simulated provider:
 
@@ -121,3 +127,11 @@ npm run migrate          # Apply pending migrations in a transaction (never drop
 ## Deployment
 
 See **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** for the complete free-tier deployment guide, exact GitHub Secrets & Variables table, and step-by-step checklist.
+
+## How predictions are produced and evaluated
+
+See **[`docs/PREDICTION_AND_LEARNING.md`](docs/PREDICTION_AND_LEARNING.md)** for the
+feature definitions, data-quality classes (including the `FUTURE_DATA` guard),
+the settlement rule version, the evaluation methodology (chronological splits
+with a horizon-length embargo, honest holdouts, walk-forward folds) and the model
+promotion/rollback gates.

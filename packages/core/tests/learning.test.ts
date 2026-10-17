@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_PROMOTION_CRITERIA,
   FEATURE_NAMES,
   auditDataset,
+  baselineMetrics,
   buildDataset,
   chronologicalSplit,
   decidePromotion,
@@ -78,10 +80,40 @@ describe('dataset construction', () => {
     expect(dataset.exclusions.duplicate).toBe(1);
   });
 
+  it('excludes rows recorded at a different prediction horizon instead of mixing them', () => {
+    const records = makeRecords(10);
+    records.push({
+      ...makeRecords(1)[0]!,
+      signalId: 'other-horizon',
+      decidedAt: new Date(Date.parse('2026-01-02T00:00:00.000Z')).toISOString(),
+      horizonSeconds: 3600,
+    });
+    const dataset = buildDataset(records, { expectedHorizonSeconds: 60 });
+    expect(dataset.samples.map((s) => s.signalId)).not.toContain('other-horizon');
+    expect(dataset.samples).toHaveLength(10);
+    expect(dataset.exclusions.horizonMismatch).toBe(1);
+  });
+
+  it('excludes rows whose horizon cannot be verified when a horizon is required', () => {
+    const row = { ...makeRecords(1)[0]!, horizonSeconds: undefined as unknown as number };
+    const dataset = buildDataset([row], { expectedHorizonSeconds: 60 });
+    expect(dataset.samples).toHaveLength(0);
+    expect(dataset.exclusions.horizonMismatch).toBe(1);
+  });
+
   it('rejects malformed feature vectors', () => {
     const dataset = buildDataset([{ ...makeRecords(1)[0]!, features: [1, 2, 3] }]);
     expect(dataset.samples).toHaveLength(0);
     expect(dataset.exclusions.invalidFeatures).toBe(1);
+  });
+
+  it('ties the checksum to the horizon it was built for', () => {
+    const bare = buildDataset(makeRecords(20));
+    const atSixty = buildDataset(makeRecords(20), { expectedHorizonSeconds: 60 });
+    // The rows are identical; the learning problem is not.
+    expect(atSixty.samples).toHaveLength(bare.samples.length);
+    expect(atSixty.checksum).not.toBe(bare.checksum);
+    expect(buildDataset(makeRecords(20), { expectedHorizonSeconds: 60 }).checksum).toBe(atSixty.checksum);
   });
 
   it('produces a stable checksum for identical data and a different one otherwise', () => {
@@ -205,6 +237,8 @@ describe('promotion gates', () => {
   const strongMetrics = {
     samples: 400,
     accuracy: 0.62,
+    balancedAccuracy: 0.62,
+    matthewsCorrelation: 0.24,
     auc: 0.64,
     logLoss: 0.65,
     brier: 0.22,
@@ -215,6 +249,19 @@ describe('promotion gates', () => {
     calibration: [],
     ece: 0.04,
     baseRate: 0.48,
+  };
+  /**
+   * The no-skill reference measured on the same holdout: a constant 48% win
+   * rate. Its log loss is the entropy of that class balance (0.6923).
+   */
+  const baseline = {
+    ...strongMetrics,
+    accuracy: 0.52,
+    balancedAccuracy: 0.5,
+    matthewsCorrelation: 0,
+    auc: null,
+    logLoss: 0.6923,
+    brier: 0.25,
   };
   const folds = [1, 2, 3, 4].map((fold) => ({
     fold,
@@ -228,6 +275,7 @@ describe('promotion gates', () => {
     const decision = decidePromotion({
       candidate: { metrics: strongMetrics, walkForward: folds, trainedSamples: 400, version: 'cand-1' },
       champion: null,
+      baseline,
     });
     expect(decision.promote).toBe(true);
     expect(decision.summary).toContain('Promoting');
@@ -237,15 +285,32 @@ describe('promotion gates', () => {
     const decision = decidePromotion({
       candidate: { metrics: { ...strongMetrics, samples: 40 }, walkForward: folds, trainedSamples: 40, version: 'cand-2' },
       champion: null,
+      baseline,
     });
     expect(decision.promote).toBe(false);
     expect(decision.checks.find((c) => c.name === 'sample_size')?.passed).toBe(false);
+  });
+
+  it('refuses promotion with fewer than 40 out-of-sample rows', () => {
+    const decision = decidePromotion({
+      candidate: {
+        metrics: { ...strongMetrics, samples: DEFAULT_PROMOTION_CRITERIA.minEvaluationSamples - 1 },
+        walkForward: folds,
+        trainedSamples: 500,
+        version: 'cand-0',
+      },
+      champion: null,
+      baseline,
+    });
+    expect(decision.promote).toBe(false);
+    expect(decision.checks.find((c) => c.name === 'evaluation_size')?.passed).toBe(false);
   });
 
   it('refuses a candidate that regresses log loss against the champion', () => {
     const decision = decidePromotion({
       candidate: { metrics: { ...strongMetrics, logLoss: 0.75 }, walkForward: folds, trainedSamples: 500, version: 'cand-3' },
       champion: { metrics: { ...strongMetrics, logLoss: 0.6 }, version: 'champ-1' },
+      baseline,
     });
     expect(decision.promote).toBe(false);
     expect(decision.checks.find((c) => c.name === 'log_loss_regression')?.passed).toBe(false);
@@ -255,6 +320,7 @@ describe('promotion gates', () => {
     const decision = decidePromotion({
       candidate: { metrics: { ...strongMetrics, baseRate: 1 }, walkForward: folds, trainedSamples: 500, version: 'cand-4' },
       champion: null,
+      baseline,
     });
     expect(decision.promote).toBe(false);
   });
@@ -264,6 +330,7 @@ describe('promotion gates', () => {
     const decision = decidePromotion({
       candidate: { metrics: strongMetrics, walkForward: unstable, trainedSamples: 500, version: 'cand-5' },
       champion: null,
+      baseline,
     });
     expect(decision.promote).toBe(false);
     expect(decision.checks.find((c) => c.name === 'walk_forward')?.passed).toBe(false);
@@ -273,9 +340,56 @@ describe('promotion gates', () => {
     const decision = decidePromotion({
       candidate: { metrics: { ...strongMetrics, ece: 0.4 }, walkForward: folds, trainedSamples: 500, version: 'cand-6' },
       champion: null,
+      baseline,
     });
     expect(decision.promote).toBe(false);
     expect(decision.checks.find((c) => c.name === 'calibration')?.passed).toBe(false);
+  });
+
+  it('refuses promotion when no baseline was supplied (fail-closed)', () => {
+    const decision = decidePromotion({
+      candidate: { metrics: strongMetrics, walkForward: folds, trainedSamples: 500, version: 'cand-7' },
+      champion: null,
+    });
+    expect(decision.promote).toBe(false);
+    expect(decision.checks.find((c) => c.name === 'baseline_skill')?.passed).toBe(false);
+    expect(decision.checks.find((c) => c.name === 'baseline_skill')?.detail).toMatch(/no baseline/i);
+  });
+
+  it('refuses a candidate that cannot beat the base-rate predictor on the same holdout', () => {
+    const decision = decidePromotion({
+      candidate: {
+        metrics: { ...strongMetrics, logLoss: baseline.logLoss + 0.01 },
+        walkForward: folds,
+        trainedSamples: 500,
+        version: 'cand-8',
+      },
+      champion: null,
+      baseline,
+    });
+    expect(decision.promote).toBe(false);
+    expect(decision.checks.find((c) => c.name === 'baseline_skill')?.passed).toBe(false);
+  });
+
+  it('refuses a majority-class-only model even when its raw accuracy clears the floor', () => {
+    const decision = decidePromotion({
+      candidate: {
+        // 60% accuracy by always predicting the majority class: no information.
+        metrics: {
+          ...strongMetrics,
+          accuracy: 0.6,
+          balancedAccuracy: 0.5,
+          confusion: { tp: 0, fp: 0, tn: 60, fn: 40 },
+        },
+        walkForward: folds,
+        trainedSamples: 500,
+        version: 'cand-9',
+      },
+      champion: null,
+      baseline,
+    });
+    expect(decision.promote).toBe(false);
+    expect(decision.checks.find((c) => c.name === 'balanced_accuracy')?.passed).toBe(false);
   });
 });
 
@@ -335,8 +449,27 @@ describe('dataset audit', () => {
 
   it('accepts a healthy dataset', () => {
     const dataset = buildDataset(makeRecords(300));
-    const audit = auditDataset(dataset, 100);
+    const audit = auditDataset(dataset, 100, Date.parse('2026-12-01T00:00:00.000Z'));
     expect(audit.ok).toBe(true);
+  });
+
+  it('judges future timestamps against the injected clock, not the wall clock', () => {
+    const dataset = buildDataset(makeRecords(5, { startIso: '2030-01-01T00:00:00.000Z' }));
+    const before = auditDataset(dataset, 1, Date.parse('2029-12-31T00:00:00.000Z'));
+    const after = auditDataset(dataset, 1, Date.parse('2030-01-02T00:00:00.000Z'));
+    expect(before.issues.join(' ')).toMatch(/future/);
+    expect(after.issues.join(' ')).not.toMatch(/future/);
+  });
+
+  it('uses the observed base rate as the no-skill reference', () => {
+    const samples = buildDataset(makeRecords(200)).samples;
+    const { majority, baseRate } = baselineMetrics(samples);
+    const expected = -(baseRate * Math.log(baseRate) + (1 - baseRate) * Math.log(1 - baseRate));
+    expect(majority.samples).toBe(samples.length);
+    expect(majority.logLoss).toBeCloseTo(expected, 4);
+    expect(majority.balancedAccuracy).toBeCloseTo(0.5, 6);
+    // A constant score ranks nothing: AUC is exactly 0.5 (all ties).
+    expect(majority.auc).toBeCloseTo(0.5, 6);
   });
 });
 

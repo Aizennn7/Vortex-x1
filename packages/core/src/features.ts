@@ -23,6 +23,14 @@ import { instrumentMeta } from './instruments.js';
 import { sessionOf } from './time.js';
 import type { Candle, MarketSnapshot, PredictionContext, RegimeState, StrategyVote } from './types.js';
 
+/**
+ * Bump this deliberately whenever a feature calculation changes without a
+ * change of name. The learning checksum includes it, so a feature change
+ * invalidates the "unchanged dataset" retraining shortcut instead of silently
+ * reusing a model trained on a different representation.
+ */
+export const FEATURE_SET_VERSION = 'features-v1';
+
 export const FEATURE_NAMES = [
   'bias',
   'confidence',

@@ -17,15 +17,10 @@ import { randomUUID } from 'node:crypto';
 import {
   assertNoSecrets,
   byHourUtc,
-  byPair,
-  byRegime,
-  byStrategy,
-  confidenceCalibration,
   maskKey,
   publicRuntimeConfig,
   redact,
   secretValues,
-  summarize,
 } from '@vortex/core';
 import {
   acknowledgeAlert,
@@ -34,8 +29,10 @@ import {
   deleteKey,
   ensureAccount,
   getAccount,
+  getModelVersion,
   insertKey,
   lastSuccessfulJob,
+  lastSuccessfulJobsByKind,
   listAlerts,
   listAudit,
   listDeliveries,
@@ -62,6 +59,7 @@ import {
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
+import { modelRegistrySummary, performanceOverview, summarizeScan } from './services/registry.js';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runSignalCycle } from './jobs/signals.js';
@@ -87,6 +85,27 @@ interface ApiError {
   code: string;
   message: string;
   detail?: unknown;
+}
+
+/**
+ * Parse a bounded, positive integer query parameter.
+ *
+ * These values come straight from the URL, and passing them to SQL unvalidated
+ * turned a typo into a 500: `limit=-5` produced "LIMIT must not be negative"
+ * and `limit=abc` produced "invalid input syntax for type bigint: NaN", both
+ * echoed back to the caller. A malformed request is the caller's mistake, so it
+ * is answered with 400 and a message that names the parameter rather than the
+ * database's internals.
+ */
+function boundedInt(raw: string | null, name: string, fallback: number, max: number): number {
+  if (raw === null || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+    throw new HttpError(400, 'invalid_request', `${name} must be a positive integer`);
+  }
+  // Clamping rather than rejecting keeps oversized values (a client asking for
+  // "everything") useful while still bounding the work.
+  return Math.min(value, max);
 }
 
 class HttpError extends Error implements ApiError {
@@ -401,24 +420,30 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       database: { status: 'DISCONNECTED', detail: runtime.db.detail },
       worker: null,
       lastSuccessfulJob: null,
+      scan: null,
       marketData: [],
       providerBudget: null,
       signals: null,
       telegram: runtime.telegram.configuration(),
+      model: null,
+      learning: null,
       alerts: [],
       note: 'Summary is limited because the database is not reachable.',
     };
   }
   const client = db(runtime);
-  const [workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components] = await Promise.all([
+  const [workers, lastJob, lastJobs, rawQuality, budget, counts, deliveries, alerts, components, registry] =
+    await Promise.all([
     workerStatus(client),
     lastSuccessfulJob(client),
+    lastSuccessfulJobsByKind(client),
     listQuality(client),
     runtime.keyPool.usageSnapshots(),
     signalCounts(client),
     listDeliveries(client, 50),
     listAlerts(client, false, 20),
     healthSnapshot(runtime),
+    modelRegistrySummary(client),
   ]);
   const nowMs = Date.now();
   const quality = refreshQualityFreshness(rawQuality, runtime.config.maxCandleAgeSeconds, nowMs);
@@ -457,6 +482,13 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
           workerId: lastJob.workerId,
         }
       : null,
+    /**
+     * Why the engine did or did not publish. Without this the dashboard can
+     * only show an empty signal table, which is indistinguishable from a
+     * broken pipeline. The values come straight from the last signal_cycle
+     * job's recorded detail — no derivation, no estimate.
+     */
+    scan: summarizeScan(lastJobs.signal_cycle ?? null),
     marketData: quality,
     providerBudget: {
       enabledKeys: budget.summary.enabledKeys,
@@ -495,30 +527,36 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       unconfirmed: deliveries.filter((d) => d.status === 'UNKNOWN').length,
     },
     components,
+    model: registry.model,
+    learning: registry.learning,
     alerts: alerts.map((a) => ({ severity: a.severity, code: a.code, title: a.title, lastSeenAt: a.lastSeenAt })),
   };
 }
 
+/** ISO timestamp parameter, or undefined when absent. Rejects garbage early. */
+function timestampParam(raw: string | null, name: string): string | undefined {
+  if (raw === null || raw.trim() === '') return undefined;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) throw new HttpError(400, 'invalid_request', `${name} must be an ISO timestamp`);
+  return new Date(ms).toISOString();
+}
+
 async function signalsRoute(ctx: RouteContext): Promise<unknown> {
   const client = db(ctx.runtime);
-  const limit = Math.min(Number(ctx.url.searchParams.get('limit') ?? 50), 500);
+  const limit = boundedInt(ctx.url.searchParams.get('limit'), 'limit', 50, 500);
   const pairs = ctx.url.searchParams.get('pairs')?.split(',').filter(Boolean);
   const outcomes = ctx.url.searchParams.get('outcomes')?.split(',').filter(Boolean) as never[] | undefined;
-  const from = ctx.url.searchParams.get('from') ?? undefined;
-  const to = ctx.url.searchParams.get('to') ?? undefined;
+  const from = timestampParam(ctx.url.searchParams.get('from'), 'from');
+  const to = timestampParam(ctx.url.searchParams.get('to'), 'to');
   const rows = await listSignals(client, { limit, pairs, outcomes, from, to });
   return { signals: rows, count: rows.length };
 }
 
 async function performanceRoute(ctx: RouteContext): Promise<unknown> {
   const client = db(ctx.runtime);
+  const breakdowns = await performanceOverview(client);
   const rows = await listSignals(client, { limit: 2000 });
-  const overall = summarize(rows);
-  const pairs = byPair(rows);
-  const strategies = byStrategy(rows);
-  const regimes = byRegime(rows);
   const hours = byHourUtc(rows);
-  const calibration = confidenceCalibration(rows, 5);
   const account = await getAccount(client, 'default');
   const paper = account
     ? {
@@ -530,12 +568,8 @@ async function performanceRoute(ctx: RouteContext): Promise<unknown> {
       }
     : null;
   return {
-    overall,
-    byPair: pairs,
-    byStrategy: strategies,
-    byRegime: regimes,
+    ...breakdowns,
     byHour: hours,
-    calibration,
     paper,
     simulated: true,
     note: 'Paper-trading figures are simulations that charge spread and slippage; they are not realised profit.',
@@ -829,11 +863,54 @@ async function modelsRoute(ctx: RouteContext): Promise<unknown> {
   };
 }
 
+/**
+ * Manual promotion is an operator override, never a silent bypass of the
+ * learning gates. A candidate whose stored decision did not pass can only be
+ * activated by an explicit `{"override": true, "reason": "..."}` request, and
+ * that reason is written to the model row and the audit log.
+ */
 async function promoteModelRoute(ctx: RouteContext): Promise<unknown> {
   const id = ctx.params.id as string;
+  // A body-less POST is the normal path for an already-approved candidate.
+  const body =
+    ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body)
+      ? (ctx.body as Record<string, unknown>)
+      : {};
+  const candidate = await getModelVersion(db(ctx.runtime), id);
+  if (!candidate) throw new HttpError(404, 'not_found', 'model version not found');
+  const decision = candidate.promotion as { promote?: unknown; summary?: unknown } | null;
+  const approved = decision?.promote === true;
+  const override = body.override === true;
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!approved && !override) {
+    const detail =
+      typeof decision?.summary === 'string' ? decision.summary : 'no promotion decision was recorded for this candidate';
+    throw new HttpError(
+      409,
+      'promotion_blocked',
+      `${detail} — promotion gates are not bypassed silently; resend with {"override": true, "reason": "..."} to record a deliberate override`,
+    );
+  }
+  if (!approved && reason.length < 10) {
+    throw new HttpError(400, 'validation_error', 'an override requires a reason of at least 10 characters');
+  }
   const result = await promoteModel(db(ctx.runtime), {
     candidateId: id,
-    promotion: { manual: true, actor: `admin:${ctx.ip}`, at: toIso(new Date()) },
+    promotion: {
+      manual: true,
+      actor: `admin:${ctx.ip}`,
+      at: toIso(new Date()),
+      ...(approved
+        ? {}
+        : {
+            override: true,
+            reason,
+            previousDecision: {
+              promote: decision?.promote ?? null,
+              summary: typeof decision?.summary === 'string' ? decision.summary : null,
+            },
+          }),
+    },
     actor: `admin:${ctx.ip}`,
   });
   ctx.runtime.models.invalidate();

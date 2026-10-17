@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { assertNoSecrets, isMarketOpen, publicRuntimeConfig, redact, secretValues } from '@vortex/core';
 import {
   lastSuccessfulJob,
+  lastSuccessfulJobsByKind,
   listAlerts,
   listDeliveries,
   listQuality,
@@ -27,6 +28,7 @@ import {
 } from '@vortex/db';
 import { WorkerRuntime } from '../apps/worker/src/runtime.js';
 import { healthSnapshot } from '../apps/worker/src/jobs/maintenance.js';
+import { modelRegistrySummary, performanceOverview, summarizeScan } from '../apps/worker/src/services/registry.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultOut = join(root, 'apps', 'web', 'public', 'snapshot.json');
@@ -53,11 +55,26 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
   }
 
   const client = runtime.db.client;
-  const [dbPing, workers, lastJob, rawQuality, budget, counts, deliveries, alerts, components, recentSignals] =
+  const [
+    dbPing,
+    workers,
+    lastJob,
+    lastJobs,
+    rawQuality,
+    budget,
+    counts,
+    deliveries,
+    alerts,
+    components,
+    recentSignals,
+    registry,
+    performance,
+  ] =
     await Promise.all([
       runtime.pingDb(),
       workerStatus(client),
       lastSuccessfulJob(client),
+      lastSuccessfulJobsByKind(client),
       listQuality(client),
       runtime.keyPool.usageSnapshots(),
       signalCounts(client),
@@ -65,6 +82,8 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       listAlerts(client, false, 20),
       healthSnapshot(runtime),
       listSignals(client, { limit: 25 }),
+      modelRegistrySummary(client),
+      performanceOverview(client),
     ]);
 
   const quality = rawQuality.map((row) => {
@@ -138,6 +157,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
             workerId: lastJob.workerId,
           }
         : null,
+      scan: summarizeScan(lastJobs.signal_cycle ?? null),
       marketData: quality,
       providerBudget: {
         enabledKeys: budget.summary.enabledKeys,
@@ -164,6 +184,9 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
         unconfirmed: deliveries.filter((d) => d.status === 'UNKNOWN').length,
       },
       components,
+      model: registry.model,
+      learning: registry.learning,
+      performance,
       alerts: alerts.map((a) => ({ severity: a.severity, code: a.code, title: a.title, lastSeenAt: a.lastSeenAt })),
     },
     config: publicRuntimeConfig(runtime.config),

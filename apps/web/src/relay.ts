@@ -34,11 +34,91 @@ export const DATA_SOURCE_MODE: DataSourceMode =
       ? 'supabase'
       : 'relay';
 
+/**
+ * Why a read failed. The dashboard renders a different, honest message for
+ * each one — "the database has no tables yet" is not the same problem as
+ * "the relay is unreachable", and neither is "nothing is configured".
+ */
+export type RelayFailureKind =
+  | 'none'
+  | 'setup-required'
+  | 'unreachable'
+  | 'unauthorized'
+  | 'not-found'
+  | 'rate-limited'
+  | 'error';
+
 export interface RelayResult<T> {
   ok: boolean;
   status: number;
   data: T | null;
   error: string | null;
+  /** Present on every result; `'none'` when the read succeeded. */
+  kind: RelayFailureKind;
+}
+
+/** PostgREST/Postgres signatures for "the object this query names does not exist". */
+export function isSetupRequiredError(status: number, message: string): boolean {
+  if (status !== 400 && status !== 404 && status !== 500 && status !== 503) return false;
+  return (
+    /relation .* does not exist/i.test(message) ||
+    /could not find the table/i.test(message) ||
+    /schema cache/i.test(message) ||
+    /does not exist/i.test(message) ||
+    /undefined_table/i.test(message) ||
+    /42P01/.test(message) ||
+    /PGRST20[45]/.test(message)
+  );
+}
+
+export function classifyFailure(status: number, message: string): RelayFailureKind {
+  if (isSetupRequiredError(status, message)) return 'setup-required';
+  if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 404) return 'not-found';
+  // 429 is its own class: retrying at the normal cadence is exactly the wrong
+  // response, so the UI must be able to say "slow down" rather than "broken".
+  if (status === 429) return 'rate-limited';
+  if (status === 0) return 'unreachable';
+  return 'error';
+}
+
+/**
+ * Delay before the next poll.
+ *
+ * A polling dashboard that retries a failing read at the normal cadence turns
+ * one transient outage into a request storm — and a 429 means the server has
+ * already said "too many". Failures therefore back off exponentially to at
+ * most eight normal intervals; a single success snaps straight back so
+ * recovery is immediate once the relay is healthy again.
+ */
+export function nextPollDelayMs(baseMs: number, consecutiveFailures: number): number {
+  const base = Math.max(0, Math.floor(baseMs));
+  if (base === 0) return 0;
+  if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return base;
+  const factor = Math.min(8, 2 ** Math.min(3, Math.floor(consecutiveFailures)));
+  return base * factor;
+}
+
+/** Human-readable next step for a failed read. */
+export function failureGuidance(kind: RelayFailureKind, mode: DataSourceMode): string {
+  switch (kind) {
+    case 'setup-required':
+      return mode === 'supabase'
+        ? 'The Supabase project answered but the VORTEX SI tables/views are missing. Run the migrations in supabase/migrations against the project, then reload. No data is being invented in the meantime.'
+        : 'The backend database has no VORTEX SI tables yet. Apply the migrations before expecting data here.';
+    case 'unreachable':
+      return 'The browser could not reach the data source. Check the URL, the network path and any content-security policy, then refresh.';
+    case 'unauthorized':
+      // Deliberately avoids naming the privileged Supabase role in bundle text:
+      // the bundle guard fails the build if that token appears in shipped JS.
+      return 'The read was rejected. Verify VITE_SUPABASE_ANON_KEY holds the public anon/publishable key — a privileged server key belongs only in GitHub Actions secrets, never in browser code.';
+    case 'not-found':
+      return 'The endpoint answered 404. Verify the relay path or the Supabase project URL.';
+    case 'rate-limited':
+      return 'The data source is rate-limiting this browser (HTTP 429). The dashboard is backing off automatically; no data is being invented while it waits.';
+    default:
+      return 'The data source answered with an error. The raw message is shown above for diagnosis.';
+  }
 }
 
 export interface HealthPayload {
@@ -85,6 +165,71 @@ export interface MarketQualityRow {
   stale?: boolean;
 }
 
+export interface ModelMetricsView {
+  accuracy?: number | null;
+  balancedAccuracy?: number | null;
+  auc?: number | null;
+  logLoss?: number | null;
+  brier?: number | null;
+  ece?: number | null;
+  samples?: number | null;
+  baseRate?: number | null;
+}
+
+export interface WalkForwardView {
+  fold: number;
+  trainSize?: number | null;
+  validationSize?: number | null;
+  accuracy?: number | null;
+}
+
+/** Model registry view (public_model_versions). Never claims a model is live unless one is champion. */
+export interface ModelSummary {
+  champion: {
+    versionId: string;
+    version: string;
+    promotedAt: string | null;
+    datasetSize: number | null;
+    datasetFrom: string | null;
+    datasetTo: string | null;
+    metrics: ModelMetricsView | null;
+    walkForward: WalkForwardView[];
+  } | null;
+  candidateCount: number;
+  rejectedCount: number;
+  archivedCount: number;
+  note: string;
+}
+
+/** Learning-run view (public_learning_runs). */
+export interface LearningSummary {
+  lastRun: {
+    startedAt: string;
+    finishedAt: string | null;
+    status: string;
+    datasetSize: number | null;
+    datasetFrom: string | null;
+    datasetTo: string | null;
+    /** Populated from `error` — a SKIPPED run explains itself here. */
+    reason: string | null;
+  } | null;
+  /** Counts of runs by status in the reported window. */
+  counts: Record<string, number>;
+  note: string;
+}
+
+/** The most recent opportunity scan, as recorded by the signal_cycle job. */
+export interface ScanSummary {
+  ranAt: string;
+  slot: string | null;
+  evaluated: number;
+  published: number;
+  noTrade: boolean;
+  blocked: number;
+  bestMiss: string | null;
+  notes: string[];
+}
+
 export interface SummaryPayload {
   generatedAt?: string;
   marketOpen?: boolean;
@@ -115,8 +260,20 @@ export interface SummaryPayload {
     unresolved: number;
     decisive: number;
     accuracy: number | null;
+    /** Wins ÷ whole cohort (unresolved charged as failures). Optional: older payloads omit it. */
+    accuracyConservative?: number | null;
+    /** Mean realised pips per settled record, net of modelled costs. */
+    expectancyPips?: number | null;
+    totalPips?: number | null;
+    cohort?: number;
     note: string;
   } | null;
+  /** Present when a model registry is readable. */
+  model?: ModelSummary | null;
+  /** Present when learning-run history is readable. */
+  learning?: LearningSummary | null;
+  /** Present when the relay recorded a signal_cycle job. */
+  scan?: ScanSummary | null;
   telegram: { configuration: { status: string; detail: string }; sent: number; failed: number; unconfirmed: number };
   alerts: { severity: string; code: string; title: string; lastSeenAt: string }[];
   note?: string;
@@ -127,6 +284,385 @@ export interface RelayClient {
   summary: () => Promise<RelayResult<SummaryPayload>>;
   config: () => Promise<RelayResult<Record<string, unknown>>>;
   signals: (limit?: number) => Promise<RelayResult<{ signals: SignalRow[]; count: number }>>;
+  /**
+   * Optional per-pair/strategy breakdowns. Present when the data source can
+   * serve them (relay `/api/performance`, the snapshot artifact, or the two
+   * public performance views); the dashboard hides the card when it is absent
+   * rather than showing zeros.
+   */
+  performance?: () => Promise<RelayResult<PerformanceOverview>>;
+}
+
+/** Normalise whichever shape the source returns into the panel's view model. */
+export function toPerformanceOverview(payload: unknown): PerformanceOverview {
+  const source = (payload ?? {}) as Record<string, unknown>;
+  const listOf = (key: string): unknown[] => {
+    const value = source[key];
+    if (Array.isArray(value)) return value;
+    // Supabase rows arrive as a flat array.
+    return [];
+  };
+  const flat = Array.isArray(payload) ? (payload as unknown[]) : [];
+  return {
+    byPair: normalizeBreakdownRows(listOf('byPair').length > 0 ? listOf('byPair') : []),
+    byStrategy: normalizeBreakdownRows(listOf('byStrategy')),
+    sampleSize:
+      typeof source.sampleSize === 'number'
+        ? source.sampleSize
+        : flat.length > 0
+          ? flat.length
+          : undefined,
+    note: typeof source.note === 'string' ? source.note : undefined,
+  };
+}
+
+/** One performance breakdown row, in the shape the dashboard renders. */
+export interface BreakdownRow {
+  key: string;
+  settled: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  unresolved: number;
+  accuracy: number | null;
+  /** 95% Wilson interval for `accuracy` over decisive outcomes; null when none. */
+  accuracyInterval: { lower: number; upper: number } | null;
+  accuracyConservative: number | null;
+  avgPips: number | null;
+  totalPips: number;
+}
+
+export interface PerformanceOverview {
+  byPair: BreakdownRow[];
+  byStrategy: BreakdownRow[];
+  sampleSize?: number;
+  note?: string;
+}
+
+/**
+ * Normalise breakdown rows from either source: the relay/snapshot payload
+ * (camelCase, produced by `@vortex/core`) or the Supabase `public_*_performance`
+ * views (snake_case). Missing denominators are reported as null, never as 0%,
+ * and unresolved rows are carried separately so they can never be counted as
+ * wins.
+ */
+export function normalizeBreakdownRows(rows: unknown[]): BreakdownRow[] {
+  const pick = (row: Record<string, unknown>, ...names: string[]): unknown => {
+    for (const name of names) {
+      if (row[name] !== undefined && row[name] !== null) return row[name];
+    }
+    return undefined;
+  };
+  return rows
+    .filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+    .map((row) => {
+      const wins = finiteOrNull(pick(row, 'wins')) ?? 0;
+      const losses = finiteOrNull(pick(row, 'losses')) ?? 0;
+      const draws = finiteOrNull(pick(row, 'draws')) ?? 0;
+      const unresolved = finiteOrNull(pick(row, 'unresolved')) ?? 0;
+      const decisive = wins + losses;
+      const accuracyFromRow = finiteOrNull(pick(row, 'accuracy'));
+      const accuracy = accuracyFromRow ?? (decisive === 0 ? null : Number((wins / decisive).toFixed(4)));
+      return {
+        key: String(pick(row, 'key', 'pair', 'strategy', 'regime') ?? 'UNKNOWN'),
+        settled: finiteOrNull(pick(row, 'settled')) ?? decisive + draws,
+        wins,
+        losses,
+        draws,
+        unresolved,
+        accuracy,
+        accuracyInterval: decisive === 0 ? null : wilsonInterval(wins, decisive),
+        accuracyConservative:
+          finiteOrNull(pick(row, 'accuracyConservative', 'accuracy_conservative')) ??
+          (wins + losses + draws + unresolved === 0
+            ? null
+            : Number((wins / (wins + losses + draws + unresolved)).toFixed(4))),
+        avgPips: finiteOrNull(pick(row, 'avgPips', 'avg_pips')),
+        totalPips: finiteOrNull(pick(row, 'totalPips', 'total_pips')) ?? 0,
+      };
+    })
+    .sort((a, b) => b.settled - a.settled || a.key.localeCompare(b.key));
+}
+
+/** Rows from `public_model_versions` (superset of what the dashboard shows). */
+export interface ModelVersionRowView {
+  id: string;
+  version: string;
+  status: string;
+  dataset_size: number | null;
+  dataset_from: string | null;
+  dataset_to: string | null;
+  metrics: Record<string, unknown> | null;
+  walk_forward: unknown;
+  promoted_at: string | null;
+  created_at: string | null;
+}
+
+export interface LearningRunRowView {
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  dataset_size: number | null;
+  dataset_from: string | null;
+  dataset_to: string | null;
+  error: string | null;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Build the model panel from registry rows. A champion is only reported when a
+ * row actually carries `status = 'CHAMPION'`; counts of candidates/rejected
+ * rows are shown so an empty registry reads as "nothing promoted yet" rather
+ * than as a malfunction.
+ */
+export function summarizeModelVersions(rows: ModelVersionRowView[]): ModelSummary {
+  const championRow = rows.find((r) => r.status === 'CHAMPION') ?? null;
+  const metrics = (championRow?.metrics ?? null) as Record<string, unknown> | null;
+  const walkForwardRaw = Array.isArray(championRow?.walk_forward) ? (championRow?.walk_forward as unknown[]) : [];
+  const walkForward: WalkForwardView[] = walkForwardRaw
+    .filter((f): f is Record<string, unknown> => typeof f === 'object' && f !== null)
+    .map((f, i) => {
+      const m = (f.metrics ?? {}) as Record<string, unknown>;
+      return {
+        fold: finiteOrNull(f.fold) ?? i + 1,
+        trainSize: finiteOrNull(f.trainSize),
+        validationSize: finiteOrNull(f.validationSize),
+        accuracy: finiteOrNull(m.accuracy),
+      };
+    });
+  return {
+    champion: championRow
+      ? {
+          versionId: championRow.id,
+          version: championRow.version,
+          promotedAt: championRow.promoted_at,
+          datasetSize: championRow.dataset_size,
+          datasetFrom: championRow.dataset_from,
+          datasetTo: championRow.dataset_to,
+          metrics: metrics
+            ? {
+                accuracy: finiteOrNull(metrics.accuracy),
+                balancedAccuracy: finiteOrNull(metrics.balancedAccuracy),
+                auc: finiteOrNull(metrics.auc),
+                logLoss: finiteOrNull(metrics.logLoss),
+                brier: finiteOrNull(metrics.brier),
+                ece: finiteOrNull(metrics.ece),
+                samples: finiteOrNull(metrics.samples),
+                baseRate: finiteOrNull(metrics.baseRate),
+              }
+            : null,
+          walkForward,
+        }
+      : null,
+    candidateCount: rows.filter((r) => r.status === 'CANDIDATE').length,
+    rejectedCount: rows.filter((r) => r.status === 'REJECTED').length,
+    archivedCount: rows.filter((r) => r.status === 'ARCHIVED').length,
+    note: championRow
+      ? 'The champion is the only model allowed to contribute a probability to new signals; candidates are evaluated but never used for trading decisions.'
+      : rows.length === 0
+        ? 'No model has been trained yet. Signals run on the rule ensemble alone, with no model probability attached — that is a valid operating state, not a failure.'
+        : 'No champion is active: candidates were rejected by the promotion gates, so the rule ensemble keeps serving signals.',
+  };
+}
+
+/** Build the learning panel from run rows (already newest-first or sorted here). */
+export function summarizeLearningRuns(rows: LearningRunRowView[]): LearningSummary {
+  const ordered = [...rows].sort(
+    (a, b) => Date.parse(b.started_at ?? '') - Date.parse(a.started_at ?? ''),
+  );
+  const last = ordered[0] ?? null;
+  const counts: Record<string, number> = {};
+  for (const row of ordered) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  return {
+    lastRun: last
+      ? {
+          startedAt: last.started_at,
+          finishedAt: last.finished_at,
+          status: last.status,
+          datasetSize: last.dataset_size,
+          datasetFrom: last.dataset_from,
+          datasetTo: last.dataset_to,
+          reason: last.error ?? null,
+        }
+      : null,
+    counts,
+    note:
+      'A run is skipped when the labelled dataset is unchanged or too small — that is the intended behaviour, not a stalled job. Promotion requires every gate to pass; a rejection keeps the previous champion.',
+  };
+}
+
+/**
+ * Wilson score interval (95%) for a win rate, used to show small-sample
+ * uncertainty next to the headline accuracy. Mirrors `wilsonInterval` in
+ * @vortex/core without pulling the whole server package into the bundle.
+ */
+export function wilsonInterval(successes: number, total: number, z = 1.96): { lower: number; upper: number } | null {
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const phat = successes / total;
+  const denom = 1 + (z * z) / total;
+  const centre = phat + (z * z) / (2 * total);
+  const spread = z * Math.sqrt((phat * (1 - phat)) / total + (z * z) / (4 * total * total));
+  return {
+    lower: Math.max(0, (centre - spread) / denom),
+    upper: Math.min(1, (centre + spread) / denom),
+  };
+}
+
+/**
+ * What the last scan actually amounted to.
+ *
+ * `NO_DATA` and `NO_TRADE` are deliberately different verdicts: "no candidate
+ * was available to evaluate" is a data/availability problem, while "candidates
+ * were evaluated and every one failed a gate" is the engine making a decision.
+ * Collapsing them hides outages behind a confident-looking NO-TRADE.
+ */
+export type ScanVerdict = 'PUBLISHED' | 'NO_TRADE' | 'NO_DATA';
+
+export function scanVerdict(scan: ScanSummary | null): ScanVerdict | null {
+  if (!scan) return null;
+  if (scan.published > 0) return 'PUBLISHED';
+  return scan.evaluated > 0 ? 'NO_TRADE' : 'NO_DATA';
+}
+
+/**
+ * Normalise the scan block. Counts are coerced, never invented: a block
+ * without a timestamp or an evaluation count is treated as absent rather than
+ * rendered as a row of zeros that would read as "evaluated 0 pairs".
+ */
+export function toScanSummary(payload: unknown): ScanSummary | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const source = payload as Record<string, unknown>;
+  const ranAt = typeof source.ranAt === 'string' ? source.ranAt : null;
+  const evaluated = finiteOrNull(source.evaluated);
+  if (!ranAt || evaluated === null) return null;
+  const count = (value: unknown): number => finiteOrNull(value) ?? 0;
+  return {
+    ranAt,
+    slot: typeof source.slot === 'string' ? source.slot : null,
+    evaluated,
+    published: count(source.published),
+    noTrade: source.noTrade === true,
+    blocked: count(source.blocked),
+    bestMiss: typeof source.bestMiss === 'string' ? source.bestMiss : null,
+    notes: Array.isArray(source.notes) ? source.notes.filter((n): n is string => typeof n === 'string').slice(0, 4) : [],
+  };
+}
+
+/* ------------------------------------------------------------------------- */
+/* Dashboard state reducers (pure, so the panel states are unit tested)       */
+/* ------------------------------------------------------------------------- */
+
+export type RelayLoadable<T> =
+  | { state: 'loading' }
+  | { state: 'ready'; value: T }
+  | { state: 'error'; message: string; kind: RelayFailureKind };
+
+export interface RelayState<T> {
+  result: RelayLoadable<T>;
+  /** Set when the newest attempt failed; the previous value is still shown. */
+  lastError: { message: string; kind: RelayFailureKind } | null;
+  refreshedAt: string | null;
+}
+
+export const INITIAL_RELAY_STATE: RelayState<never> = {
+  result: { state: 'loading' },
+  lastError: null,
+  refreshedAt: null,
+};
+
+/**
+ * Fold one read result into the panel state.
+ *
+ * A failure NEVER discards data that was read successfully: the last good
+ * payload stays on screen with `lastError` set, so a transient blip cannot
+ * blank the board into a misleading "everything is broken" screen. Only a
+ * failure with nothing to fall back on produces an error state.
+ */
+export function reduceRelayState<T>(
+  previous: RelayState<T>,
+  response: RelayResult<T>,
+  at = new Date().toISOString(),
+): RelayState<T> {
+  if (response.ok && response.data !== null) {
+    return { result: { state: 'ready', value: response.data }, lastError: null, refreshedAt: at };
+  }
+  const error = { message: response.error ?? 'unknown error', kind: response.kind };
+  if (previous.result.state === 'ready') {
+    return { result: previous.result, lastError: error, refreshedAt: previous.refreshedAt };
+  }
+  return {
+    result: { state: 'error', message: error.message, kind: error.kind },
+    lastError: error,
+    refreshedAt: previous.refreshedAt,
+  };
+}
+
+export interface DashboardBanner {
+  tone: 'warn' | 'error';
+  text: string;
+}
+
+/** Safety banners, in priority order. Simulated data outranks everything. */
+export function buildDashboardBanner(params: {
+  synthetic: boolean | null;
+  ready: boolean | null;
+  reasons: string[];
+  stalePairs: string[];
+}): DashboardBanner | null {
+  if (params.synthetic === true) {
+    return {
+      tone: 'warn',
+      text: 'This deployment is running on the SIMULATED data feed. Nothing shown here reflects live market data.',
+    };
+  }
+  if (params.ready === false) {
+    return { tone: 'warn', text: `Data source answered but reports not ready: ${params.reasons.join('; ')}` };
+  }
+  if (params.stalePairs.length > 0) {
+    return {
+      tone: 'warn',
+      text: `Stale market data detected for ${params.stalePairs.join(', ')}. Signals are suppressed (NO-TRADE) when candle age exceeds the freshness threshold.`,
+    };
+  }
+  return null;
+}
+
+export function isRowStale(row: MarketQualityRow): boolean {
+  return row.stale === true || row.status === 'DEGRADED' || row.status === 'DISCONNECTED';
+}
+
+export function stalePairs(rows: MarketQualityRow[]): string[] {
+  return rows.filter(isRowStale).map((row) => row.pair);
+}
+
+/** `undefined` means "no opinion yet" — the card then shows no badge at all. */
+export function workerBadge(
+  worker: SummaryPayload['worker'],
+  lastJob: SummaryPayload['lastSuccessfulJob'],
+): string | undefined {
+  if (worker?.liveness === 'CONNECTED' && worker.running !== false) return 'CONNECTED';
+  if (worker || lastJob) return 'DISCONNECTED';
+  return 'NOT VERIFIED';
+}
+
+export function marketDataBadge(rows: MarketQualityRow[]): string {
+  if (rows.length === 0) return 'NOT VERIFIED';
+  if (rows.some(isRowStale)) return 'DEGRADED';
+  if (rows.some((row) => row.status === 'CONNECTED')) return 'CONNECTED';
+  return 'NOT VERIFIED';
+}
+
+/**
+ * How a pair's freshness should read on the card. Pure text: the dashboard must
+ * stay understandable without relying on colour.
+ */
+export function marketDataLabel(row: MarketQualityRow): string {
+  const ageLabel = row.ageSeconds === null ? 'no candles' : `${row.ageSeconds}s old`;
+  return `${row.status} · ${ageLabel}${isRowStale(row) ? ' (STALE — signals suppressed)' : ' (fresh)'}`;
 }
 
 /**
@@ -211,24 +747,34 @@ export function createRelayClient(baseUrl = RELAY_BASE): RelayClient {
       const text = await response.text();
       const body = text.length === 0 ? null : (JSON.parse(text) as { ok?: boolean; data?: T; error?: { message?: string } });
       if (!response.ok || body?.ok === false) {
-        return { ok: false, status: response.status, data: null, error: body?.error?.message ?? `HTTP ${response.status}` };
+        const message = body?.error?.message ?? `HTTP ${response.status}`;
+        return { ok: false, status: response.status, data: null, error: message, kind: classifyFailure(response.status, message) };
       }
-      return { ok: true, status: response.status, data: (body?.data ?? null) as T, error: null };
+      return { ok: true, status: response.status, data: (body?.data ?? null) as T, error: null, kind: 'none' };
     } catch (error) {
       return {
         ok: false,
         status: 0,
         data: null,
         error: `relay unreachable from this browser: ${(error as Error).message}`,
+        kind: 'unreachable',
       };
     }
   }
 
   return {
     health: () => get<HealthPayload>('/health'),
-    summary: () => get<SummaryPayload>('/api/summary'),
+    summary: async () => {
+      const res = await get<SummaryPayload>('/api/summary');
+      return res.ok && res.data ? { ...res, data: { ...res.data, scan: toScanSummary(res.data.scan) } } : res;
+    },
     config: () => get<Record<string, unknown>>('/api/config'),
     signals: (limit = 25) => get<{ signals: SignalRow[]; count: number }>(`/api/signals?limit=${limit}`),
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const res = await get<Record<string, unknown>>('/api/performance');
+      if (!res.ok || !res.data) return { ...res, data: null };
+      return { ...res, data: toPerformanceOverview(res.data) };
+    },
   };
 }
 
@@ -257,15 +803,16 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
           parsed && typeof parsed === 'object' && 'message' in (parsed as Record<string, unknown>)
             ? String((parsed as Record<string, unknown>).message)
             : `HTTP ${response.status}`;
-        return { ok: false, status: response.status, data: null, error: msg };
+        return { ok: false, status: response.status, data: null, error: msg, kind: classifyFailure(response.status, msg) };
       }
-      return { ok: true, status: response.status, data: parsed as T, error: null };
+      return { ok: true, status: response.status, data: parsed as T, error: null, kind: 'none' };
     } catch (error) {
       return {
         ok: false,
         status: 0,
         data: null,
         error: `Supabase public view unreachable: ${(error as Error).message}`,
+        kind: 'unreachable',
       };
     }
   }
@@ -276,7 +823,13 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
         { component: string; status: string; detail: string | null; metadata: Record<string, unknown> | null; observed_at: string }[]
       >('public_agent_status?select=component,status,detail,metadata,observed_at');
       if (!res.ok || !res.data) {
-        return { ok: false, status: res.status, data: null, error: res.error ?? 'Supabase public_agent_status query failed' };
+        return {
+          ok: false,
+          status: res.status,
+          data: null,
+          error: res.error ?? 'Supabase public_agent_status query failed',
+          kind: res.kind === 'none' ? 'error' : res.kind,
+        };
       }
       const rows = res.data;
       const workerRow = rows.find((r) => r.component === 'worker');
@@ -291,6 +844,8 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
       return {
         ok: true,
         status: 200,
+        error: null,
+        kind: 'none',
         data: {
           service: 'supabase-public-views',
           status: reasons.length === 0 ? 'ok' : 'degraded',
@@ -303,12 +858,22 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
           note: 'Direct read-only view via Supabase Free (no persistent HTTP relay). Backend jobs run on scheduled GitHub Actions.',
           timestamp: new Date().toISOString(),
         },
-        error: null,
       };
     },
 
     async summary(): Promise<RelayResult<SummaryPayload>> {
-      const [workersRes, qualityRes, budgetRes, quotaRes, perfRes, deliveriesRes, alertsRes, agentRes] = await Promise.all([
+      const [
+        workersRes,
+        qualityRes,
+        budgetRes,
+        quotaRes,
+        perfRes,
+        deliveriesRes,
+        alertsRes,
+        agentRes,
+        modelsRes,
+        runsRes,
+      ] = await Promise.all([
         queryView<
           {
             worker_id: string;
@@ -343,6 +908,7 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
         ),
         queryView<
           {
+            cohort: number;
             decisive: number;
             wins: number;
             losses: number;
@@ -350,6 +916,9 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
             unresolved: number;
             pending: number;
             accuracy: number | null;
+            accuracy_conservative: number | null;
+            expectancy_pips: number | null;
+            total_pips: number | null;
           }[]
         >('public_overall_performance?select=*'),
         queryView<{ status: string }[]>('public_telegram_delivery?select=status&limit=200'),
@@ -359,10 +928,22 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
         queryView<{ component: string; status: string; detail: string | null; metadata: Record<string, unknown> | null }[]>(
           'public_agent_status?select=component,status,detail,metadata',
         ),
+        queryView<ModelVersionRowView[]>(
+          'public_model_versions?select=id,version,status,dataset_size,dataset_from,dataset_to,metrics,walk_forward,promoted_at,created_at&order=created_at.desc&limit=25',
+        ),
+        queryView<LearningRunRowView[]>(
+          'public_learning_runs?select=started_at,finished_at,status,dataset_size,dataset_from,dataset_to,error&order=started_at.desc&limit=20',
+        ),
       ]);
 
       if (!workersRes.ok) {
-        return { ok: false, status: workersRes.status, data: null, error: workersRes.error ?? 'Failed to read public_worker_status' };
+        return {
+          ok: false,
+          status: workersRes.status,
+          data: null,
+          error: workersRes.error ?? 'Failed to read public_worker_status',
+          kind: workersRes.kind === 'none' ? 'error' : workersRes.kind,
+        };
       }
 
       const nowMs = Date.now();
@@ -433,6 +1014,8 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
       return {
         ok: true,
         status: 200,
+        error: null,
+        kind: 'none',
         data: {
           generatedAt: new Date(nowMs).toISOString(),
           marketOpen: isFxMarketOpenAt(new Date(nowMs)),
@@ -459,9 +1042,21 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
                 unresolved: Number(pRow.unresolved ?? 0),
                 decisive,
                 accuracy: rawAcc === null ? null : Number((rawAcc * 100).toFixed(2)),
-                note: 'Accuracy uses decisive outcomes only; unresolved records are reported separately and never counted as wins.',
+                accuracyConservative:
+                  pRow.accuracy_conservative === null || pRow.accuracy_conservative === undefined
+                    ? null
+                    : Number((Number(pRow.accuracy_conservative) * 100).toFixed(2)),
+                expectancyPips: Number(pRow.expectancy_pips ?? 0),
+                totalPips: Number(pRow.total_pips ?? 0),
+                cohort: Number(pRow.cohort ?? 0),
+                note: 'Accuracy uses decisive outcomes only; unresolved records are reported separately and never counted as wins. Pips are paper results net of the modelled spread and slippage.',
               }
             : null,
+          model: modelsRes.ok ? summarizeModelVersions(modelsRes.data ?? []) : null,
+          learning: runsRes.ok ? summarizeLearningRuns(runsRes.data ?? []) : null,
+          // The public views expose no job detail, so the scan block is
+          // genuinely unavailable here — omitted rather than faked.
+          scan: null,
           telegram: {
             configuration: {
               status: tgAgent?.status ?? 'NOT VERIFIED',
@@ -478,16 +1073,17 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
             lastSeenAt: a.last_seen_at,
           })),
         },
-        error: null,
       };
     },
 
     async config(): Promise<RelayResult<Record<string, unknown>>> {
       const res = await queryView<{ key: string; value: unknown }[]>('public_runtime_config?select=key,value');
-      if (!res.ok || !res.data) return { ok: false, status: res.status, data: null, error: res.error };
+      if (!res.ok || !res.data) {
+        return { ok: false, status: res.status, data: null, error: res.error, kind: res.kind === 'none' ? 'error' : res.kind };
+      }
       const out: Record<string, unknown> = {};
       for (const row of res.data) out[row.key] = row.value;
-      return { ok: true, status: 200, data: out, error: null };
+      return { ok: true, status: 200, data: out, error: null, kind: 'none' };
     },
 
     async signals(limit = 25): Promise<RelayResult<{ signals: SignalRow[]; count: number }>> {
@@ -506,7 +1102,9 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
       >(
         `public_signals?select=id,pair,decision,status,confidence,scheduled_entry_at,outcome,realized_pips,strategy&order=scheduled_entry_at.desc&limit=${limit}`,
       );
-      if (!res.ok || !res.data) return { ok: false, status: res.status, data: null, error: res.error };
+      if (!res.ok || !res.data) {
+        return { ok: false, status: res.status, data: null, error: res.error, kind: res.kind === 'none' ? 'error' : res.kind };
+      }
       const signals: SignalRow[] = res.data.map((r) => ({
         id: r.id,
         pair: r.pair,
@@ -518,7 +1116,35 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
         realizedPips: r.realized_pips === null || r.realized_pips === undefined ? null : Number(r.realized_pips),
         strategy: r.strategy,
       }));
-      return { ok: true, status: 200, data: { signals, count: signals.length }, error: null };
+      return { ok: true, status: 200, data: { signals, count: signals.length }, error: null, kind: 'none' };
+    },
+
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const [pairRes, strategyRes] = await Promise.all([
+        queryView<Record<string, unknown>[]>('public_pair_performance?select=*'),
+        queryView<Record<string, unknown>[]>('public_strategy_performance?select=*'),
+      ]);
+      if (!pairRes.ok && !strategyRes.ok) {
+        const failure = !pairRes.ok ? pairRes : strategyRes;
+        return {
+          ok: false,
+          status: failure.status,
+          data: null,
+          error: failure.error ?? 'the performance views are not readable',
+          kind: failure.kind === 'none' ? 'error' : failure.kind,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          byPair: normalizeBreakdownRows(pairRes.data ?? []),
+          byStrategy: normalizeBreakdownRows(strategyRes.data ?? []),
+          note: 'Read from the RLS-protected public_pair_performance and public_strategy_performance views.',
+        },
+        error: null,
+        kind: 'none',
+      };
     },
   };
 }
@@ -527,23 +1153,43 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
  * Static snapshot client (`./snapshot.json`) for deployments without a live
  * browser endpoint. Dynamically recomputes staleness against `Date.now()`.
  */
-export function createSnapshotClient(snapshotUrl = './snapshot.json'): RelayClient {
-  async function loadSnapshot(): Promise<
-    RelayResult<{
-      ok: boolean;
-      generatedAt: string;
-      configured: boolean;
-      error?: string;
-      health: HealthPayload | null;
-      summary: SummaryPayload | null;
-      config: Record<string, unknown>;
-      signals: { signals: SignalRow[]; count: number };
-    }>
-  > {
+export function createSnapshotClient(
+  snapshotUrl = './snapshot.json',
+  options: { cacheMs?: number } = {},
+): RelayClient {
+  // One refresh reads health + summary + signals at (almost) the same instant.
+  // A short shared cache turns four identical downloads into one, which matters
+  // on a metered connection and for GitHub Pages bandwidth.
+  const cacheMs = options.cacheMs ?? 2_000;
+  let cache: { at: number; result: RelayResult<unknown> } | null = null;
+  // Concurrent readers (the three panels that mount together) share a single
+  // in-flight download instead of racing each other for four copies.
+  let inFlight: Promise<RelayResult<SnapshotPayload>> | null = null;
+
+  type SnapshotPayload = {
+    ok: boolean;
+    generatedAt: string;
+    configured: boolean;
+    error?: string;
+    health: HealthPayload | null;
+    summary: SummaryPayload | null;
+    config: Record<string, unknown>;
+    signals: { signals: SignalRow[]; count: number };
+  };
+
+  /** Snapshot JSON is produced by the exporter; `performance` may be absent. */
+
+  async function downloadSnapshot(): Promise<RelayResult<SnapshotPayload>> {
     try {
       const response = await fetch(snapshotUrl, { headers: { accept: 'application/json' }, cache: 'no-store' });
       if (!response.ok) {
-        return { ok: false, status: response.status, data: null, error: `Snapshot unavailable (HTTP ${response.status})` };
+        return {
+          ok: false,
+          status: response.status,
+          data: null,
+          error: `Snapshot unavailable (HTTP ${response.status})`,
+          kind: response.status === 404 ? 'not-found' : 'error',
+        };
       }
       const parsed = (await response.json()) as {
         ok: boolean;
@@ -561,23 +1207,45 @@ export function createSnapshotClient(snapshotUrl = './snapshot.json'): RelayClie
           status: 503,
           data: null,
           error: parsed.error ?? 'Static snapshot was built without a database connection.',
+          kind: 'setup-required',
         };
       }
-      return { ok: true, status: 200, data: parsed, error: null };
+      return { ok: true, status: 200, data: parsed, error: null, kind: 'none' };
     } catch (error) {
-      return { ok: false, status: 0, data: null, error: `Snapshot unreachable: ${(error as Error).message}` };
+      return { ok: false, status: 0, data: null, error: `Snapshot unreachable: ${(error as Error).message}`, kind: 'unreachable' };
     }
+  }
+
+  async function loadSnapshot(): Promise<RelayResult<SnapshotPayload>> {
+    const now = Date.now();
+    if (cache && now - cache.at < cacheMs) return cache.result as RelayResult<SnapshotPayload>;
+    if (inFlight) return inFlight;
+    inFlight = downloadSnapshot()
+      .then((result) => {
+        // Failures are cached too, but only for the same short window: a
+        // flapping endpoint must not be re-fetched for every panel.
+        cache = { at: Date.now(), result };
+        return result;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
   }
 
   return {
     async health(): Promise<RelayResult<HealthPayload>> {
       const snap = await loadSnapshot();
-      if (!snap.ok || !snap.data?.health) return { ok: false, status: snap.status, data: null, error: snap.error };
-      return { ok: true, status: 200, data: snap.data.health, error: null };
+      if (!snap.ok || !snap.data?.health) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
+      return { ok: true, status: 200, data: snap.data.health, error: null, kind: 'none' };
     },
     async summary(): Promise<RelayResult<SummaryPayload>> {
       const snap = await loadSnapshot();
-      if (!snap.ok || !snap.data?.summary) return { ok: false, status: snap.status, data: null, error: snap.error };
+      if (!snap.ok || !snap.data?.summary) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
       const nowMs = Date.now();
       const s = snap.data.summary;
       const snapLag = Number.isFinite(Date.parse(snap.data.generatedAt))
@@ -602,20 +1270,44 @@ export function createSnapshotClient(snapshotUrl = './snapshot.json'): RelayClie
           workerStatus: worker ? worker.liveness : 'NOT VERIFIED',
           lastSuccessfulJob,
           marketData: computeMarketDataStaleness(s.marketData ?? [], 90, nowMs),
+          scan: toScanSummary(s.scan),
         },
         error: null,
+        kind: 'none',
       };
     },
     async config(): Promise<RelayResult<Record<string, unknown>>> {
       const snap = await loadSnapshot();
-      if (!snap.ok || !snap.data) return { ok: false, status: snap.status, data: null, error: snap.error };
-      return { ok: true, status: 200, data: snap.data.config, error: null };
+      if (!snap.ok || !snap.data) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
+      return { ok: true, status: 200, data: snap.data.config, error: null, kind: 'none' };
     },
     async signals(limit = 25): Promise<RelayResult<{ signals: SignalRow[]; count: number }>> {
       const snap = await loadSnapshot();
-      if (!snap.ok || !snap.data) return { ok: false, status: snap.status, data: null, error: snap.error };
+      if (!snap.ok || !snap.data) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
       const sliced = snap.data.signals.signals.slice(0, limit);
-      return { ok: true, status: 200, data: { signals: sliced, count: sliced.length }, error: null };
+      return { ok: true, status: 200, data: { signals: sliced, count: sliced.length }, error: null, kind: 'none' };
+    },
+
+    async performance(): Promise<RelayResult<PerformanceOverview>> {
+      const snap = await loadSnapshot();
+      if (!snap.ok || !snap.data) {
+        return { ok: false, status: snap.status, data: null, error: snap.error, kind: snap.kind === 'none' ? 'error' : snap.kind };
+      }
+      const block = (snap.data.summary as { performance?: unknown } | null)?.performance;
+      if (!block) {
+        return {
+          ok: false,
+          status: 200,
+          data: null,
+          error: 'this snapshot was built before per-pair breakdowns were exported',
+          kind: 'error',
+        };
+      }
+      return { ok: true, status: 200, data: toPerformanceOverview(block), error: null, kind: 'none' };
     },
   };
 }

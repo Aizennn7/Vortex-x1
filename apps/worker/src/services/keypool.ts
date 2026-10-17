@@ -61,11 +61,15 @@ export interface ProviderCallResult<T> {
   value?: T;
   keyId?: string;
   error?: string;
-  /** True when the pool has no usable key and the caller must degrade. */
+  /**
+   * True only when the pool has no usable capacity (no keys, all cooling down,
+   * quota spent). A request that failed on the wire with budget still
+   * available reports `false` so the caller records a real failure.
+   */
   exhausted: boolean;
   httpStatus?: number;
   /** Machine-readable pool state when the call could not be served. */
-  reason?: SelectionResult['reason'];
+  reason?: SelectionResult['reason'] | 'no_alternative_key';
 }
 
 export class KeyPool {
@@ -158,7 +162,7 @@ export class KeyPool {
     const tried = new Set<string>();
     let lastError: string | undefined;
     let lastStatus: number | undefined;
-    let lastReason: SelectionResult['reason'] | undefined;
+    let lastReason: ProviderCallResult<never>['reason'] | undefined;
     let exhausted = false;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -180,11 +184,15 @@ export class KeyPool {
         return { ok: false, error: selection.detail, exhausted: true, reason: selection.reason };
       }
       if (tried.has(selection.keyId)) {
-        // selectKey is deterministic; re-selecting a key we already used means
-        // no other key is eligible. Stop rather than loop.
-        lastError = `no alternative key available after ${tried.size} attempt(s)`;
-        lastReason = 'exhausted';
-        exhausted = true;
+        // selectKey is deterministic, so re-selecting a key we already used
+        // means no other key is eligible. Stop rather than loop.
+        //
+        // This is NOT quota exhaustion: the pool still had budget, the request
+        // itself failed. Reporting it as `exhausted` would let the caller treat
+        // a provider outage as deliberate degradation and record the cycle as
+        // skipped. The distinction is what keeps outage alerts honest.
+        lastError = `${lastError ?? 'provider call failed'} — no alternative key available after ${tried.size} attempt(s)`;
+        lastReason = 'no_alternative_key';
         break;
       }
       tried.add(selection.keyId);
@@ -341,7 +349,7 @@ export class KeyPool {
       error: lastError ?? 'provider call failed',
       exhausted,
       httpStatus: lastStatus,
-      reason: exhausted ? (lastReason ?? 'exhausted') : undefined,
+      reason: lastReason,
     };
   }
 

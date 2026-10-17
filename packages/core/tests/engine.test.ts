@@ -8,12 +8,16 @@ import type { Candle, MarketSnapshot, StrategyVote } from '../src/types.js';
 
 const START = Date.parse('2026-01-05T09:00:00.000Z');
 
-function series(count: number, fn: (i: number) => { open: number; high: number; low: number; close: number }): Candle[] {
+function series(
+  count: number,
+  fn: (i: number) => { open: number; high: number; low: number; close: number },
+  pair = 'EUR/USD',
+): Candle[] {
   return Array.from({ length: count }, (_, i) => {
     const prices = fn(i);
     const openTime = new Date(START + i * 60_000).toISOString();
     return {
-      pair: 'EUR/USD',
+      pair,
       timeframe: 'M1' as const,
       openTime,
       closeTime: new Date(START + (i + 1) * 60_000).toISOString(),
@@ -135,6 +139,31 @@ describe('regime detection', () => {
     expect(regime.regime).toBe('UNKNOWN');
     expect(regime.confidence).toBe(0);
   });
+
+  /**
+   * `slope()` is mean-normalised, so the trend threshold is scale-free: the
+   * same percentage drift per bar must classify identically on a 1.1-priced
+   * pair and on a 151-priced one. This pins the unit contract that a
+   * price-distance reading would silently break.
+   */
+  it('classifies the same percentage drift identically on different price scales', () => {
+    const drift = (start: number, perBar: number) =>
+      series(
+        160,
+        (i) => {
+          const base = start * (1 + i * perBar);
+          const step = start * perBar;
+          return { open: base, high: base + step * 1.5, low: base - step * 0.4, close: base + step };
+        },
+        start > 10 ? 'USD/JPY' : 'EUR/USD',
+      );
+    const usd = drift(1.1, 0.00014);
+    const jpy = drift(151, 0.00014);
+    const usdRegime = detectRegime(usd, aggregate(usd, 'M3', 'test')).regime;
+    const jpyRegime = detectRegime(jpy, aggregate(jpy, 'M3', 'test')).regime;
+    expect(usdRegime).toBe(jpyRegime);
+    expect(['TREND_UP', 'VOLATILE']).toContain(usdRegime);
+  });
 });
 
 describe('vote combination', () => {
@@ -251,6 +280,94 @@ describe('ensemble gates', () => {
     expect(result.modelProbability).toBeCloseTo(0.95, 5);
     expect(result.modelVersionId).toBe('model-1');
     expect(result.decision).toBe('BUY');
+  });
+
+  it('is deterministic: identical inputs produce identical decisions, gates and reasons', () => {
+    const m1 = uptrend();
+    const regime = detectRegime(m1, aggregate(m1, 'M3', 'test'));
+    const params = {
+      snapshot: snapshot(m1),
+      regime,
+      m1,
+      m3: aggregate(m1, 'M3', 'test'),
+      options: {
+        ...options,
+        minConfidence: 0.3,
+        model: { versionId: 'model-1', predict: () => 0.7 },
+        learnedWeights: { trend_follow: 1.2, mean_reversion: 0.9 },
+      },
+    };
+    const first = evaluatePrediction(params);
+    const second = evaluatePrediction(params);
+    expect(second.result).toEqual(first.result);
+    expect(second.context).toEqual(first.context);
+  });
+
+  it('ignores a model that returns an unusable probability and says so', () => {
+    const m1 = uptrend();
+    const regime = detectRegime(m1, aggregate(m1, 'M3', 'test'));
+    const ruleOnly = evaluatePrediction({
+      snapshot: snapshot(m1),
+      regime,
+      m1,
+      m3: aggregate(m1, 'M3', 'test'),
+      options: { ...options, minConfidence: 0.3 },
+    });
+    for (const invalid of [Number.NaN, 1.7, -0.2]) {
+      const { result } = evaluatePrediction({
+        snapshot: snapshot(m1),
+        regime,
+        m1,
+        m3: aggregate(m1, 'M3', 'test'),
+        options: { ...options, minConfidence: 0.3, model: { versionId: 'bad-model', predict: () => invalid } },
+      });
+      expect(result.modelProbability).toBeNull();
+      expect(result.modelVersionId).toBeNull();
+      expect(result.warnings).toContain('model_invalid_output');
+      expect(result.decision).toBe(ruleOnly.result.decision);
+      expect(result.confidence).toBe(ruleOnly.result.confidence);
+      expect(result.gates.find((g) => g.gate === 'model_agreement')?.passed).toBe(false);
+    }
+  });
+
+  it('redacts secrets from a model error before it reaches the stored reason', () => {
+    const m1 = uptrend();
+    const regime = detectRegime(m1, aggregate(m1, 'M3', 'test'));
+    const secret = '0123456789abcdef0123456789abcdef';
+    const { result } = evaluatePrediction({
+      snapshot: snapshot(m1),
+      regime,
+      m1,
+      m3: aggregate(m1, 'M3', 'test'),
+      options: {
+        ...options,
+        model: {
+          versionId: 'broken-model',
+          predict: () => {
+            throw new Error(`request failed for https://api.twelvedata.com/quote?apikey=${secret}`);
+          },
+        },
+      },
+    });
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain(secret);
+    expect(result.warnings).toContain('model_error');
+    expect(result.reasons.some((r) => r.startsWith('model unavailable:'))).toBe(true);
+  });
+
+  it('treats a non-finite spread as a failed gate rather than a pass', () => {
+    const m1 = uptrend();
+    const regime = detectRegime(m1, aggregate(m1, 'M3', 'test'));
+    const { result } = evaluatePrediction({
+      snapshot: snapshot(m1, { spreadPips: Number.NaN, spreadOk: true }),
+      regime,
+      m1,
+      m3: aggregate(m1, 'M3', 'test'),
+      options,
+    });
+    expect(result.decision).toBe('NO_TRADE');
+    expect(result.gates.find((g) => g.gate === 'spread')?.passed).toBe(false);
+    expect(result.gates.find((g) => g.gate === 'spread')?.detail).toContain('unknown');
   });
 });
 

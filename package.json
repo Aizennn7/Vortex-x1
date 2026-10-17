@@ -14,7 +14,6 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "build:core": "npm run build -w @vortex/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",

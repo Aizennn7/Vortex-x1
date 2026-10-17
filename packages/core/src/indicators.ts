@@ -78,14 +78,17 @@ export function rsi(values: number[], period = 14): Series {
   }
   let avgGain = gain / period;
   let avgLoss = loss / period;
-  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  // RS = avgGain / avgLoss is undefined when both are zero, which is exactly
+  // what a perfectly flat series produces. Returning 100 there labelled a dead
+  // market as maximally overbought; the neutral convention is 50.
+  out[period] = avgLoss === 0 ? (avgGain === 0 ? 50 : 100) : 100 - 100 / (1 + avgGain / avgLoss);
   for (let i = period + 1; i < values.length; i += 1) {
     const change = (values[i] as number) - (values[i - 1] as number);
     const g = change > 0 ? change : 0;
     const l = change < 0 ? -change : 0;
     avgGain = (avgGain * (period - 1) + g) / period;
     avgLoss = (avgLoss * (period - 1) + l) / period;
-    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    out[i] = avgLoss === 0 ? (avgGain === 0 ? 50 : 100) : 100 - 100 / (1 + avgGain / avgLoss);
   }
   return out;
 }
@@ -340,6 +343,14 @@ export function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * Division that cannot produce NaN or ±Infinity.
+ *
+ * Both operands are checked: guarding only the denominator still let a NaN
+ * numerator (a missing indicator reading, a gap in a series) propagate through
+ * every downstream ratio and silently poison a confidence score.
+ */
 export function safeDiv(a: number, b: number, fallback = 0): number {
-  return b === 0 || !Number.isFinite(b) ? fallback : a / b;
+  if (!Number.isFinite(a) || b === 0 || !Number.isFinite(b)) return fallback;
+  return a / b;
 }
