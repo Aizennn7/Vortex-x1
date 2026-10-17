@@ -452,18 +452,46 @@ describe('privileged plane — operations', () => {
     expect(JSON.stringify(jobs.body.data)).toContain('maintenance');
   });
 
+  /**
+   * The calendar must not decide what this test proves. When the FX market is
+   * closed the cycle returns before it ever looks at the key pool, so the
+   * clock is pinned to a weekday inside the session and restored afterwards.
+   */
+  async function withPinnedClock<T>(iso: string, fn: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+    try {
+      return await fn();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
   it('degrades honestly when a job needs provider keys it does not have', async () => {
     const keys = await listKeys(harness.client);
     for (const key of keys) {
       await updateKey(harness.client, key.id, { enabled: false });
     }
     harness.runtime.keyPool.invalidate();
-    const result = await api('/admin/ingest/run', { method: 'POST', headers: admin });
+    const result = await withPinnedClock('2026-01-05T10:00:00.000Z', () =>
+      api('/admin/ingest/run', { method: 'POST', headers: admin }),
+    );
     expect(result.status).toBe(200);
     // The cycle must report the degradation honestly instead of claiming success
     // or spinning on the provider.
     expect(result.body.data.exhausted).toBe(true);
     expect(JSON.stringify(result.body.data.detail)).toMatch(/key|quota|budget/i);
+  });
+
+  it('does not blame the credentials for a closed market', async () => {
+    // Saturday: ingestion legitimately skips for a calendar reason, which is a
+    // different fact from an exhausted key pool and must be reported as such.
+    const result = await withPinnedClock('2026-01-10T12:00:00.000Z', () =>
+      api('/admin/ingest/run', { method: 'POST', headers: admin }),
+    );
+    expect(result.status).toBe(200);
+    expect(result.body.data.exhausted).toBe(false);
+    expect(result.body.data.detail.join(' ')).toMatch(/market closed/i);
   });
 
   it('rejects a body larger than the limit', async () => {
