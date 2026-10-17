@@ -318,32 +318,33 @@ function Dashboard() {
 
   const startSignalScan = useCallback(async (profile: 'VIP' | 'Session') => {
     if (!adminToken.trim()) {
-      setSignalActionStatus('Enter the relay admin token below to authorize a scan. It is kept in this page only and is not saved.');
+      setSignalActionStatus('Enter a repository-scoped GitHub fine-grained token with Actions: write permission. It stays in page memory only.');
       return;
     }
     setStartingProfile(profile);
-    setSignalActionStatus('Authorizing ' + profile + ' start and requesting a fresh market scan…');
+    setSignalActionStatus('Requesting GitHub Actions to run a fresh ' + profile + ' signal scan…');
     try {
-      const base = RELAY_BASE.replace(/\/$/, '');
-      const response = await fetch(base + '/admin/signals/scan', {
+      const response = await fetch('https://api.github.com/repos/Aizennn7/Vortex-x1/actions/workflows/vortex-jobs.yml/dispatches', {
         method: 'POST',
-        headers: { accept: 'application/json', authorization: 'Bearer ' + adminToken.trim() },
+        headers: {
+          accept: 'application/vnd.github+json',
+          authorization: 'Bearer ' + adminToken.trim(),
+          'X-GitHub-Api-Version': '2022-11-28',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'main', inputs: { job: 'signals' } }),
       });
-      const body = await response.json() as { ok?: boolean; data?: { published?: number; job?: { status?: string; ran?: boolean } }; error?: { message?: string } };
-      if (!response.ok || body.ok === false) throw new Error(body.error?.message ?? ('Scan request failed (HTTP ' + response.status + ')'));
-      const published = typeof body.data?.published === 'number' ? body.data.published : null;
-      setSignalActionStatus(published === null
-        ? profile + ' start accepted by the relay. Check scan status for the outcome.'
-        : published > 0
-          ? profile + ' start completed: ' + published + ' new signal(s) published by the shared scan.'
-          : profile + ' start completed: no new signals qualified. The engine may correctly return NO-TRADE.');
-      await Promise.all([signals.refresh(), summary.refresh()]);
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error('GitHub Actions dispatch failed (HTTP ' + response.status + '): ' + (detail || response.statusText));
+      }
+      setSignalActionStatus(profile + ' start accepted by GitHub Actions. The shared signal scan is queued; eligible signals will be published by the pipeline when it completes. No-trade is possible when no opportunity passes the gates. Track progress in Actions.');
     } catch (error) {
-      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message + '. Confirm a relay URL is configured, its CORS allows this dashboard, and the admin token is valid.');
+      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message + '. Check the token scope (Actions: write), token expiry, and repository access.');
     } finally {
       setStartingProfile(null);
     }
-  }, [adminToken, signals.refresh, summary.refresh]);
+  }, [adminToken]);
 
   const copyLatestSignal = useCallback(async () => {
     if (!latestSignal) {
@@ -458,9 +459,9 @@ function Dashboard() {
       </section>
 
       <section className="signal-admin-access" aria-label="Signal scan authorization">
-        <label htmlFor="signal-admin-token">Scan authorization token</label>
-        <input id="signal-admin-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Relay admin token (not saved)" />
-        <p className="feature-note">Required to start a scan. Sent only to the configured relay over HTTPS; never put this token in GitHub Pages build variables or source code.</p>
+        <label htmlFor="signal-github-token">GitHub Actions authorization</label>
+        <input id="signal-github-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Fine-grained GitHub token (not saved)" />
+        <p className="feature-note">Create a fine-grained token restricted to this repository with Actions: write permission. It is sent directly to api.github.com over HTTPS and is never saved in browser storage or bundled into the site. Anyone who can run scripts in this page could access a token while entered, so use a narrowly scoped, short-lived token.</p>
         <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
 
