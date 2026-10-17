@@ -29,6 +29,7 @@ import {
   deleteKey,
   ensureAccount,
   getAccount,
+  getModelVersion,
   insertKey,
   lastSuccessfulJob,
   listAlerts,
@@ -822,11 +823,54 @@ async function modelsRoute(ctx: RouteContext): Promise<unknown> {
   };
 }
 
+/**
+ * Manual promotion is an operator override, never a silent bypass of the
+ * learning gates. A candidate whose stored decision did not pass can only be
+ * activated by an explicit `{"override": true, "reason": "..."}` request, and
+ * that reason is written to the model row and the audit log.
+ */
 async function promoteModelRoute(ctx: RouteContext): Promise<unknown> {
   const id = ctx.params.id as string;
+  // A body-less POST is the normal path for an already-approved candidate.
+  const body =
+    ctx.body && typeof ctx.body === 'object' && !Array.isArray(ctx.body)
+      ? (ctx.body as Record<string, unknown>)
+      : {};
+  const candidate = await getModelVersion(db(ctx.runtime), id);
+  if (!candidate) throw new HttpError(404, 'not_found', 'model version not found');
+  const decision = candidate.promotion as { promote?: unknown; summary?: unknown } | null;
+  const approved = decision?.promote === true;
+  const override = body.override === true;
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!approved && !override) {
+    const detail =
+      typeof decision?.summary === 'string' ? decision.summary : 'no promotion decision was recorded for this candidate';
+    throw new HttpError(
+      409,
+      'promotion_blocked',
+      `${detail} — promotion gates are not bypassed silently; resend with {"override": true, "reason": "..."} to record a deliberate override`,
+    );
+  }
+  if (!approved && reason.length < 10) {
+    throw new HttpError(400, 'validation_error', 'an override requires a reason of at least 10 characters');
+  }
   const result = await promoteModel(db(ctx.runtime), {
     candidateId: id,
-    promotion: { manual: true, actor: `admin:${ctx.ip}`, at: toIso(new Date()) },
+    promotion: {
+      manual: true,
+      actor: `admin:${ctx.ip}`,
+      at: toIso(new Date()),
+      ...(approved
+        ? {}
+        : {
+            override: true,
+            reason,
+            previousDecision: {
+              promote: decision?.promote ?? null,
+              summary: typeof decision?.summary === 'string' ? decision.summary : null,
+            },
+          }),
+    },
     actor: `admin:${ctx.ip}`,
   });
   ctx.runtime.models.invalidate();

@@ -179,6 +179,12 @@ Failure keeps the current champion and stores the failed gate names on the
 candidate. Promotion and rollback are single transactional statements, and the
 previous champion is archived rather than deleted.
 
+Manual promotion through `POST /admin/models/:id/promote` is an operator
+override, not a silent bypass. A candidate whose stored decision did not pass
+is refused with `409 promotion_blocked`; activating it anyway requires an
+explicit `{"override": true, "reason": "..."}` body. The reason and the
+previous decision are stored on the model row and in the audit log.
+
 ### Guarded retraining
 
 `shouldRetrain` compares the dataset checksum with the previous **successful**

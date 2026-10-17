@@ -142,17 +142,18 @@ export async function getChampion(client: SqlClient, kind = 'logistic_regression
   return rows.rows[0] ? rowToModelVersion(rows.rows[0]) : null;
 }
 
-export async function getModelVersion(client: SqlClient, id: string): Promise<ModelVersion | null> {
-  const rows = await client.query<ModelVersionRow>(`select ${MODEL_COLUMNS} from model_versions where id = $1`, [id]);
-  return rows.rows[0] ? rowToModelVersion(rows.rows[0]) : null;
-}
-
 export async function listModelVersions(client: SqlClient, limit = 50): Promise<ModelVersion[]> {
   const rows = await client.query<ModelVersionRow>(
     `select ${MODEL_COLUMNS} from model_versions order by created_at desc limit $1`,
     [limit],
   );
   return rows.rows.map(rowToModelVersion);
+}
+
+/** Read one model version, including the stored promotion decision. Read-only. */
+export async function getModelVersion(client: SqlClient, id: string): Promise<ModelVersion | null> {
+  const rows = await client.query<ModelVersionRow>(`select ${MODEL_COLUMNS} from model_versions where id = $1`, [id]);
+  return rows.rows[0] ? rowToModelVersion(rows.rows[0]) : null;
 }
 
 /**

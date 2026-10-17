@@ -10,7 +10,16 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { encryptSecret, insertSignal, keyFingerprint, listAudit, listKeys, updateKey } from '@vortex/db';
+import {
+  encryptSecret,
+  insertModelVersion,
+  insertSignal,
+  keyFingerprint,
+  listAudit,
+  listKeys,
+  listModelVersions,
+  updateKey,
+} from '@vortex/db';
 import { maskKey } from '@vortex/core';
 import {
   createHarness,
@@ -492,6 +501,68 @@ describe('privileged plane — operations', () => {
     expect(result.status).toBe(200);
     expect(result.body.data.exhausted).toBe(false);
     expect(result.body.data.detail.join(' ')).toMatch(/market closed/i);
+  });
+
+  it('refuses to promote a candidate the gates rejected', async () => {
+    const candidate = await insertModelVersion(harness.client, {
+      version: 'relay-blocked-candidate',
+      datasetChecksum: 'checksum-blocked',
+      datasetSize: 300,
+      datasetFrom: '2026-01-01T00:00:00.000Z',
+      datasetTo: '2026-02-01T00:00:00.000Z',
+      featureNames: ['bias'],
+      hyper: {},
+      parameters: {},
+      metrics: {},
+      walkForward: [],
+      baselines: {},
+      promotion: { promote: false, summary: 'Keeping the current model — failed gates: baseline_skill' },
+    });
+    const path = `/admin/models/${candidate.id}/promote`;
+    const blocked = await api(path, { method: 'POST', headers: admin });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('promotion_blocked');
+    expect(blocked.body.error.message).toMatch(/baseline_skill/);
+
+    // An override must be deliberate and explained.
+    const unexplained = await api(path, {
+      method: 'POST',
+      headers: { ...admin, 'content-type': 'application/json' },
+      body: JSON.stringify({ override: true }),
+    });
+    expect(unexplained.status).toBe(400);
+
+    const overridden = await api(path, {
+      method: 'POST',
+      headers: { ...admin, 'content-type': 'application/json' },
+      body: JSON.stringify({ override: true, reason: 'operator review after a rejected holdout' }),
+    });
+    expect(overridden.status).toBe(200);
+    expect(overridden.body.data.promoted).toBe(true);
+    const stored = (await listModelVersions(harness.client, 10)).find((v) => v.id === candidate.id);
+    expect(stored?.status).toBe('CHAMPION');
+    expect(stored?.promotion.override).toBe(true);
+    expect(String(stored?.promotion.reason)).toMatch(/operator review/);
+  });
+
+  it('promotes a candidate whose stored decision passed', async () => {
+    const candidate = await insertModelVersion(harness.client, {
+      version: 'relay-approved-candidate',
+      datasetChecksum: 'checksum-approved',
+      datasetSize: 400,
+      datasetFrom: '2026-01-01T00:00:00.000Z',
+      datasetTo: '2026-02-15T00:00:00.000Z',
+      featureNames: ['bias'],
+      hyper: {},
+      parameters: {},
+      metrics: {},
+      walkForward: [],
+      baselines: {},
+      promotion: { promote: true, summary: 'Promoting relay-approved-candidate: all gates passed.' },
+    });
+    const result = await api(`/admin/models/${candidate.id}/promote`, { method: 'POST', headers: admin });
+    expect(result.status).toBe(200);
+    expect(result.body.data.promoted).toBe(true);
   });
 
   it('rejects a body larger than the limit', async () => {
