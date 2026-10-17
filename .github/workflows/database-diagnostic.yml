@@ -16,9 +16,6 @@ name: Read-only database diagnostic
 # only prints a parsed host/port/database/user summary.
 on:
   workflow_dispatch:
-  # TEMPORARY verification trigger for the PR branch; removed after the run.
-  push:
-    branches: [arena/58692db8-vortex-x1]
 
 permissions:
   contents: read
