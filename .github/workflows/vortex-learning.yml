@@ -41,7 +41,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # These workflows invoke TypeScript CLIs provided by the root devDependency `tsx`.
+      # NODE_ENV=production can make npm ci omit devDependencies, so include them explicitly.
+      - run: npm ci --include=dev
 
       - name: Verify required secrets and inspect migration status
         run: |
@@ -56,8 +58,9 @@ jobs:
           # Validate the URI before any network call. This fails closed with an
           # actionable message instead of `getaddrinfo EAI_AGAIN base`.
           npm run db:diagnose -- --config-only --require-configured
+          # Keep scheduled workflows read-only with respect to schema changes.
+          # Apply pending migrations deliberately after the connection/status checks are verified.
           npm run migrate:status
-          npm run migrate
 
       - name: Run learning and maintenance jobs
         run: npm run job:run -- --job=learning,maintenance
