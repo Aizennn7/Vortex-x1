@@ -78,3 +78,103 @@ table { width:100%; border-collapse:collapse; font-size:.79rem; font-variant-num
 @media(max-width:760px) { .planet-art { right:-17%; width:58vw; opacity:.42; }.cosmic-hero { min-height:320px; }.feature-grid { grid-template-columns:1fr; }.masthead-meta { align-items:flex-start; } }
 @media(max-width:560px) { main { padding:1rem .8rem 2.5rem; }.masthead { align-items:flex-start; }.masthead-meta { width:100%; }.cosmic-hero { padding:1.35rem; border-radius:20px; }.cosmic-hero h2 { font-size:2.35rem; }.planet-art { right:-28%; width:75vw; opacity:.28; }.feature-card { border-radius:18px; }.facts div { flex-direction:column; gap:.12rem; }.facts dd { text-align:left; }.stat-value { font-size:1.2rem; }.section-heading { align-items:flex-start; flex-direction:column; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; transition-duration:.01ms!important; animation-duration:.01ms!important; animation-iteration-count:1!important; } }
+
+
+/* Premium glass / orbital motion polish — presentation only. */
+:root {
+  --panel: rgba(18, 19, 30, .68);
+  --panel-edge: rgba(231, 198, 205, .17);
+}
+body {
+  background:
+    radial-gradient(ellipse at 78% 4%, rgba(151, 92, 126, .2), transparent 34rem),
+    radial-gradient(ellipse at 7% 45%, rgba(91, 105, 153, .13), transparent 42rem),
+    radial-gradient(ellipse at 54% 100%, rgba(110, 67, 92, .09), transparent 38rem),
+    #080910;
+}
+body::before {
+  opacity: .46;
+  animation: star-drift 100s linear infinite alternate;
+}
+@keyframes star-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-12px, 8px, 0); }
+}
+.workspace-nav {
+  position: sticky;
+  top: .35rem;
+  z-index: 10;
+  width: fit-content;
+  max-width: 100%;
+  margin: .25rem 0 .4rem;
+  border: 1px solid rgba(231, 198, 205, .13);
+  border-radius: 999px;
+  background: rgba(10, 11, 18, .74);
+  backdrop-filter: blur(20px) saturate(135%);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, .18);
+}
+.workspace-nav a { white-space: nowrap; }
+.cosmic-hero {
+  border-color: rgba(230, 190, 201, .25);
+  background:
+    radial-gradient(ellipse at 76% 48%, rgba(147, 99, 144, .14), transparent 35%),
+    linear-gradient(110deg, rgba(15, 16, 26, .96), rgba(22, 19, 32, .82) 58%, rgba(34, 23, 39, .55));
+  box-shadow: 0 26px 100px rgba(0, 0, 0, .28), inset 0 1px rgba(255,255,255,.045);
+}
+.planet-art { animation: orbit-float 16s ease-in-out infinite; }
+.planet { animation: planet-glow 9s ease-in-out infinite alternate; }
+.planet-ring { animation: ring-turn 32s linear infinite; }
+.orbit-dot { animation: orbit-pulse 4s ease-in-out infinite; }
+.blossom-one { animation: petal-float 9s ease-in-out infinite; }
+.blossom-two { animation: petal-float 12s ease-in-out infinite reverse; }
+.blossom-three { animation: petal-float 10s ease-in-out infinite 1s; }
+@keyframes orbit-float {
+  0%, 100% { translate: 0 -50%; }
+  50% { translate: 0 calc(-50% - 9px); }
+}
+@keyframes planet-glow {
+  from { filter: saturate(.88) brightness(.92); }
+  to { filter: saturate(1.12) brightness(1.08); }
+}
+@keyframes ring-turn {
+  from { rotate: -24deg; }
+  to { rotate: 336deg; }
+}
+@keyframes orbit-pulse {
+  0%, 100% { opacity: .65; scale: .85; }
+  50% { opacity: 1; scale: 1.15; }
+}
+@keyframes petal-float {
+  0%, 100% { translate: 0 0; rotate: 0deg; }
+  50% { translate: 5px -9px; rotate: 9deg; }
+}
+.card, .feature-card {
+  backdrop-filter: blur(18px) saturate(125%);
+  box-shadow: 0 16px 44px rgba(0,0,0,.16), inset 0 1px rgba(255,255,255,.025);
+  transition: border-color .22s ease, background-color .22s ease, transform .22s ease;
+}
+.card:hover, .feature-card:hover {
+  border-color: rgba(231, 198, 205, .27);
+}
+.feature-card h2, .section-heading h2 { text-wrap: balance; }
+button, .primary-link, .workspace-nav a { -webkit-tap-highlight-color: transparent; }
+::selection { color: #17121a; background: #e8c1c4; }
+@media (max-width: 760px) {
+  .workspace-nav {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    justify-content: flex-start;
+    border-radius: 16px;
+    scrollbar-width: thin;
+  }
+  .workspace-nav a { flex: 0 0 auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
