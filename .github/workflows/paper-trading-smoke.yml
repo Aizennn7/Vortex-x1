@@ -1,0 +1,41 @@
+name: Paper Trading Safe Smoke Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/worker/**"
+      - "packages/**"
+      - ".github/workflows/paper-trading-smoke.yml"
+      - "package.json"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vortex-paper-smoke
+  cancel-in-progress: true
+
+jobs:
+  simulated-paper-cycle:
+    name: Simulated paper cycle (no broker, no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_ENV: test
+      VORTEX_USE_EMBEDDED_DB: "true"
+      VORTEX_PROVIDER: simulated
+      VORTEX_ALLOW_SYNTHETIC_SIGNALS: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run one simulated paper-trading cycle
+        shell: bash
+        run: |
+          export VORTEX_SECRET_KEY="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+          npm run job:run -- --job=all
