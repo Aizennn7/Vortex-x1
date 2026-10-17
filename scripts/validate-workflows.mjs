@@ -53,6 +53,16 @@ for (const file of workflowFiles) {
     if (line.includes('\t')) {
       errors.push(`${file}:${idx + 1}: YAML must not contain tab characters`);
     }
+    // `name: some: value` is invalid YAML (a colon followed by a space starts
+    // a nested mapping). GitHub rejects the whole workflow with a file error.
+    const nameValue = /^\s*(?:-\s*)?name:\s*(.+)$/.exec(line);
+    if (nameValue) {
+      const value = nameValue[1].trim();
+      const quoted = /^(['"]).*\1$/.test(value);
+      if (!quoted && /:\s/.test(value)) {
+        errors.push(`${file}:${idx + 1}: quote the "name:" value because it contains ": "`);
+      }
+    }
   });
 
   for (const key of ['name:', 'on:', 'jobs:', 'concurrency:']) {

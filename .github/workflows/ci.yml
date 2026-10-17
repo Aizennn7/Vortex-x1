@@ -28,7 +28,7 @@ jobs:
         run: npm run validate:workflows
       - name: Validate the database diagnostic without credentials
         run: npm run db:diagnose -- --config-only
-      - name: Fail closed on a relative database URL (regression: getaddrinfo base)
+      - name: "Fail closed on a relative database URL (regression: getaddrinfo base)"
         run: |
           set +e
           DATABASE_URL=base npm run db:diagnose -- --config-only > diagnostic.log 2>&1
