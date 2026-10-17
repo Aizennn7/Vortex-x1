@@ -465,6 +465,20 @@ export async function runLearningJob(
     slot,
     async () => {
       const summary = await runLearningCycle(runtime, now);
+      runtime.logger.info('learning cycle summary', {
+        component: 'learning',
+        datasetSize: summary.datasetSize,
+        checksum: summary.checksum,
+        exclusions: summary.exclusions,
+        candidateVersion: summary.candidateVersion,
+        promoted: summary.promoted,
+        skipped: summary.skipped,
+        evaluationSet: summary.evaluationSet,
+        walkForwardAccuracy: summary.walkForwardAccuracy,
+        embargoSeconds: summary.embargoSeconds,
+        embargoedRows: summary.embargoedRows,
+        summary: summary.summary,
+      });
       return { status: 'SUCCEEDED', detail: { ...summary } };
     },
     { staleAfterSeconds: 3600, alertCode: 'learning-failing', ...options },
