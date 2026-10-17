@@ -16,7 +16,12 @@
  * string is never printed; only the parsed host/port/database/user are shown.
  */
 
-import { DatabaseConfigError, resolveDatabaseConnection, type DatabaseTarget } from '../connection.js';
+import {
+  authenticationFailureGuidance,
+  DatabaseConfigError,
+  resolveDatabaseConnection,
+  type DatabaseTarget,
+} from '../connection.js';
 import { migrate, status } from '../migrate.js';
 import { PgliteClient } from '../pglite.js';
 import { createPostgresClientFromTarget } from '../postgres.js';
@@ -26,7 +31,8 @@ function describeTarget(target: DatabaseTarget): string {
   return (
     `source=${summary.source} endpoint=${summary.kind} ` +
     `host=${summary.host} port=${summary.port} database=${summary.database} ` +
-    `user=${summary.user || '(default)'} ssl=${summary.ssl ? (summary.sslMode ?? 'required') : 'off'}`
+    `user=${summary.user || '(default)'} password_present=${summary.passwordPresent ? 'yes' : 'no'} ` +
+    `ssl=${summary.ssl ? (summary.sslMode ?? 'required') : 'off'}`
   );
 }
 
@@ -88,6 +94,9 @@ async function main(): Promise<void> {
     const ping = 'ping' in client ? await client.ping() : { ok: true, detail: 'embedded' };
     if (!ping.ok) {
       process.stderr.write(`Database unreachable: ${ping.detail}\n`);
+      if (/password authentication failed/i.test(ping.detail)) {
+        process.stderr.write(`\n${authenticationFailureGuidance(target.projectRef)}\n`);
+      }
       process.exitCode = 1;
       return;
     }

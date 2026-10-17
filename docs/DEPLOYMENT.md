@@ -76,7 +76,7 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
      DATABASE_URL="postgresql://postgres.<ref>:<password>@<pooler-host>:5432/postgres" npm run migrate:status
      ```
      `npm run migrate` is the only command that applies migrations. The diagnostic and `migrate:status` are strictly read-only.
-   - The GitHub Actions diagnostic workflow (`.github/workflows/database-diagnostic.yml`) runs the same read-only check. Both scheduled workflows run `npm run migrate:status` followed by `npm run migrate` automatically during normal operation.
+   - The GitHub Actions diagnostic workflow (`.github/workflows/database-diagnostic.yml`) runs the same read-only check. The scheduled workflows run `npm run migrate:status` (read-only inspection) only. Apply migrations deliberately with the gated **Apply database migrations (gated)** workflow (`.github/workflows/database-migrate.yml`): it verifies connectivity read-only, previews the pending migrations, requires a `confirm_apply` input, applies, and then confirms the expected tables exist.
 
 2. **Generate `VORTEX_SECRET_KEY`**
    ```bash
@@ -133,6 +133,35 @@ Typical causes and fixes:
 a fallback when `DATABASE_URL` is unset; an invalid direct secret can no longer
 override a working pooler secret. An invalid `DATABASE_URL` is never masked by
 a valid direct secret — fix the primary secret.
+
+### `password authentication failed for user "postgres"`
+
+This error comes from the upstream Postgres behind the pooler (the pooler
+reports the mapped role `postgres`). It means the route, host, port, database
+and username `postgres.<project-ref>` were all correct, but the password in the
+`DATABASE_URL` **repository secret** does not match the password Supabase
+currently expects. The two ways this happens:
+
+1. **Stale secret** — the Supabase database password was reset after the secret
+   was last saved, or the secret was updated in the wrong place (an environment
+   secret instead of the repository secret, or a different repository).
+2. **Corrupted paste** — the password segment was emptied, double-encoded, or
+   hand-typed instead of copied. Special characters must be percent-encoded
+   exactly once; the dashboard copy button does that for you.
+
+Consolidated fix (do this once, then stop rotating the password):
+
+1. Supabase Dashboard → **Connect → Session pooler** → copy the full URI
+   (it embeds the current password).
+2. GitHub → **Settings → Secrets and variables → Actions → Repository
+   secrets** → replace `DATABASE_URL` with that exact string.
+3. Dispatch the **Read-only database diagnostic** workflow once to verify.
+4. Apply the pending migrations with the gated **Apply database migrations**
+   workflow (`confirm_apply: yes`).
+
+The diagnostic now fails closed on an empty password segment and warns on a
+double-encoded password, so both corrupted-paste cases are named in the log
+instead of surfacing as a bare authentication failure.
 
 If a Supabase shared-pooler URI uses port `6543` (transaction mode), the resolver
 corrects it to port `5432` (session mode) on the same host. That is deterministic

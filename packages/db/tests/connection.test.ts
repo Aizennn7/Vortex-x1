@@ -197,6 +197,52 @@ describe('database connection-string validation', () => {
     );
     expect(error.message).not.toContain('super-secret-password');
   });
+
+  it('fails closed on an empty password segment (silent 28P01 otherwise)', () => {
+    const error = expectConfigError(
+      () =>
+        parseDatabaseUrl(
+          `postgresql://postgres.${REF}:@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`,
+          { env: {} },
+        ),
+      'missing-password',
+    );
+    expect(error.message.toLowerCase()).toContain('password');
+    expect(error.message).not.toContain('@aws');
+    // A local/embedded endpoint may legitimately have no password.
+    expect(() => parseDatabaseUrl('postgresql://postgres:@localhost:5432/postgres', { env: {} })).not.toThrow();
+  });
+
+  it('warns when the password appears double-encoded', () => {
+    const target = parseDatabaseUrl(
+      `postgresql://postgres.${REF}:p%2540ss@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`,
+      { env: {} },
+    );
+    // Decoded once: the sent password is the literal string "p%40ss".
+    expect(target.toPgConfig().password).toBe('p%40ss');
+    expect(target.notes.join(' ')).toMatch(/double-encoded/i);
+    // A single-encoded password must not trigger the warning.
+    const single = parseDatabaseUrl(POOLER, { env: {} });
+    expect(single.notes.join(' ')).not.toMatch(/double-encoded/i);
+  });
+
+  it('flags unexpected query keys and fragments (raw ? or # in the password)', () => {
+    const withFragment = parseDatabaseUrl(`${POOLER}#stale`, { env: {} });
+    expect(withFragment.notes.join(' ')).toMatch(/fragment/i);
+  });
+
+  it('reports password presence without exposing the password', () => {
+    const summary = parseDatabaseUrl(POOLER, { env: {} }).describe();
+    expect(summary.passwordPresent).toBe(true);
+    expect(JSON.stringify(summary)).not.toContain(PASSWORD);
+    expect(JSON.stringify(summary)).not.toContain(ENCODED);
+
+    const empty = parseDatabaseUrl(
+      `postgresql://postgres.${REF}:@localhost:5432/postgres`,
+      { env: {} },
+    ).describe();
+    expect(empty.passwordPresent).toBe(false);
+  });
 });
 
 describe('database connection resolution', () => {

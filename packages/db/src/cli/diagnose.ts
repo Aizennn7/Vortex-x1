@@ -19,6 +19,7 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import {
+  authenticationFailureGuidance,
   DatabaseConfigError,
   resolveDatabaseConnection,
   type DatabaseTarget,
@@ -67,6 +68,7 @@ function describe(target: DatabaseTarget): string {
     `port=${summary.port}`,
     `database=${summary.database}`,
     `user=${summary.user || '(default)'}`,
+    `password_present=${summary.passwordPresent ? 'yes' : 'no'}`,
     `ssl=${summary.ssl ? (summary.sslMode ?? 'required') : 'off'}`,
     `project_ref=${summary.projectRef ?? '(not a Supabase endpoint)'}`,
   ].join(' ');
@@ -220,9 +222,20 @@ async function main(): Promise<void> {
     if (drift > 0) process.exitCode = 1;
   } catch (error) {
     // PostgresClient sanitises driver messages (password/URI redacted).
-    process.stderr.write(`Database unreachable: ${(error as Error).message}\n`);
+    const failure = error as Error & { code?: string | number };
+    process.stderr.write(`Database unreachable: ${failure.message}\n`);
+    if (failure.code === '28P01' || /password authentication failed/i.test(failure.message)) {
+      process.stderr.write(`\n${authenticationFailureGuidance(target.projectRef)}\n`);
+      annotate(
+        'error',
+        'Database authentication failed',
+        'Password rejected (28P01). The route, host, port, database and user are ' +
+          'correct; the repository secret DATABASE_URL holds the wrong password. ' +
+          'See the checklist in the log. The password and URI are never printed.',
+      );
+    }
     process.stderr.write('Nothing was created, applied or changed.\n');
-    annotate('error', 'Database unreachable', (error as Error).message);
+    annotate('error', 'Database unreachable', failure.message);
     process.exitCode = 1;
   } finally {
     await client.close();

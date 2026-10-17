@@ -62,6 +62,7 @@ export type DatabaseConfigIssue =
   | 'dummy-host'
   | 'invalid-port'
   | 'missing-user'
+  | 'missing-password'
   | 'ssl-disabled'
   | 'unknown-sslmode'
   | 'transaction-pooler'
@@ -98,6 +99,11 @@ export interface DatabaseTargetSummary {
   ssl: boolean;
   sslMode: string | null;
   projectRef: string | null;
+  /**
+   * True when the URI carries a non-empty password segment. A boolean
+   * only — the value itself is never included in the summary.
+   */
+  passwordPresent: boolean;
 }
 
 export interface DatabaseTarget {
@@ -260,8 +266,9 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
     throw new DatabaseConfigError(
       'malformed',
       variable,
-      `${variable} is not a valid URL. Re-copy the Session Pooler URI from the Supabase dashboard ` +
-        'and, if the password contains @, :, /, ? or #, let the dashboard percent-encode it.',
+      `${variable} is not a valid URL. A raw "?", "#", "/" or space in the password breaks ` +
+        'URL parsing — re-copy the Session Pooler URI from the Supabase dashboard (its copy ' +
+        'button percent-encodes the password exactly once) and update the repository secret.',
     );
   }
 
@@ -322,6 +329,49 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
   }
 
   const local = isLocalHost(host);
+
+  // An empty password segment parses cleanly and then fails at the server
+  // with the least informative error there is ("password authentication
+  // failed for user ..."). Fail closed here, where the cause is certain.
+  if (!local && password.length === 0) {
+    throw new DatabaseConfigError(
+      'missing-password',
+      variable,
+      `${variable} has an empty password segment. Re-copy the full Session Pooler URI ` +
+        'from Supabase Dashboard → Connect → Session pooler (it embeds the current ' +
+        'password) and replace the repository secret DATABASE_URL with the whole string. ' +
+        'Never clear or hand-edit the password inside the URI.',
+    );
+  }
+
+  // A password that still contains a percent-escape after decoding was
+  // encoded twice (for example a dashboard string encoded again by hand).
+  if (/%[0-9a-f]{2}/i.test(password)) {
+    notes.push(
+      'The password still contains a percent-escape after decoding; it may be ' +
+        'double-encoded. Copy the URI with the dashboard copy button so the password ' +
+        'is encoded exactly once.',
+    );
+  }
+  // A raw "?" or "#" in the password is split off into the query/fragment
+  // at parse time, silently truncating the password. The fingerprint of
+  // that mistake is an unexpected query key or a non-empty fragment.
+  for (const key of url.searchParams.keys()) {
+    if (key !== 'sslmode') {
+      notes.push(
+        `The URI query contains an unexpected parameter "${key}". A raw "?" in the ` +
+          'password would be split off here — percent-encode the password or re-copy ' +
+          'the URI from the Supabase dashboard.',
+      );
+    }
+  }
+  if (url.hash.length > 0) {
+    notes.push(
+      'The URI contains a fragment. A raw "#" in the password would be truncated ' +
+        'into it — percent-encode the password or re-copy the URI from the dashboard.',
+    );
+  }
+
   const looksSupabase = /\.supabase\.(?:co|com)$/i.test(host);
   if (!local && sslMode === 'disable' && looksSupabase) {
     throw new DatabaseConfigError(
@@ -490,6 +540,7 @@ export function parseDatabaseUrl(raw: string, options: ParseDatabaseUrlOptions =
         ssl,
         sslMode: sslModeForSummary,
         projectRef,
+        passwordPresent: password.length > 0,
       };
     },
     toPgConfig() {
@@ -617,4 +668,29 @@ export function resolvesToDummyHost(raw: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Safe, actionable guidance for a Postgres 28P01 authentication
+ * failure. Carries no values — only the (non-secret) project ref,
+ * if known — and never prints the password or the connection string.
+ */
+export function authenticationFailureGuidance(projectRef: string | null): string {
+  const where = projectRef ? ` for project \`${projectRef}\`` : '';
+  return [
+    `Authentication failed (Postgres 28P01)${where}: the pooler route, host, port,`,
+    'database and username all parsed correctly, but the password in DATABASE_URL',
+    'does not match the password Supabase currently expects. The two ways this happens:',
+    '  1. stale secret — the Supabase password was reset after DATABASE_URL was last',
+    '     saved, or the secret was updated in the wrong place (an environment secret',
+    '     instead of the repository secret, or another repository).',
+    '  2. corrupted paste — the password segment was emptied, double-encoded, or',
+    '     hand-typed instead of copied (special characters must be percent-encoded',
+    '     exactly once).',
+    'Fix (once): in Supabase open Dashboard → Connect → Session pooler, copy the full',
+    'URI (it embeds the current password), then replace the repository secret',
+    'DATABASE_URL: Settings → Secrets and variables → Actions → Repository secrets.',
+    'Do not reset the password again, and never paste the password or URI into',
+    'logs, issues, or chat.',
+  ].join('\n');
 }
