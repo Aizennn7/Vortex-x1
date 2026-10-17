@@ -576,9 +576,15 @@ describe('performance breakdowns', () => {
     ]);
     expect(rows[0]).toMatchObject({ key: 'EUR/USD', wins: 5, losses: 3, draws: 1, unresolved: 2, avgPips: 1.25 });
     expect(rows[0]!.accuracy).toBeCloseTo(0.625, 3);
+    // Five wins from eight decisive rows: the interval must straddle 62.5% and
+    // be wide, because eight observations cannot establish an edge.
+    expect(rows[0]!.accuracyInterval?.lower).toBeLessThan(0.625);
+    expect(rows[0]!.accuracyInterval?.upper).toBeGreaterThan(0.625);
+    expect((rows[0]!.accuracyInterval?.upper ?? 0) - (rows[0]!.accuracyInterval?.lower ?? 0)).toBeGreaterThan(0.3);
     expect(rows[0]!.accuracyConservative).toBeCloseTo(5 / 11, 3);
     // No decisive outcome must read as "no accuracy", never as 0%.
     expect(rows[1]!.accuracy).toBeNull();
+    expect(rows[1]!.accuracyInterval).toBeNull();
     expect(rows[1]!.settled).toBe(0);
   });
 
@@ -586,7 +592,7 @@ describe('performance breakdowns', () => {
     const rows = normalizeBreakdownRows([
       { key: 'trend_follow', settled: 10, wins: 6, losses: 4, draws: 0, unresolved: 1, accuracy: 0.6, avgPips: 0.4, totalPips: 4 },
     ]);
-    expect(rows[0]).toEqual({
+    expect(rows[0]).toMatchObject({
       key: 'trend_follow',
       settled: 10,
       wins: 6,
@@ -594,10 +600,13 @@ describe('performance breakdowns', () => {
       draws: 0,
       unresolved: 1,
       accuracy: 0.6,
+      accuracyInterval: expect.any(Object),
       accuracyConservative: Number((6 / 11).toFixed(4)),
       avgPips: 0.4,
       totalPips: 4,
     });
+    expect(rows[0]!.accuracyInterval?.lower).toBeCloseTo(0.3127, 3);
+    expect(rows[0]!.accuracyInterval?.upper).toBeCloseTo(0.8318, 3);
   });
 
   it('sorts by sample size and ignores junk rows', () => {

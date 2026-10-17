@@ -200,7 +200,16 @@ function BreakdownTable({
               <td>{row.losses}</td>
               <td>{row.draws}</td>
               <td>{row.unresolved}</td>
-              <td>{row.accuracy === null ? 'n/a' : `${(row.accuracy * 100).toFixed(1)}%`}</td>
+              <td>
+                {row.accuracy === null ? 'n/a' : `${(row.accuracy * 100).toFixed(1)}%`}
+                {row.accuracyInterval ? (
+                  <span className="muted">
+                    {' '}
+                    ({Math.round(row.accuracyInterval.lower * 100)}–{Math.round(row.accuracyInterval.upper * 100)}%)
+                  </span>
+                ) : null}
+                {row.wins + row.losses < 10 ? <span title="fewer than 10 decisive outcomes"> †</span> : null}
+              </td>
               <td>{row.avgPips === null ? 'n/a' : row.avgPips.toFixed(2)}</td>
             </tr>
           ))}
@@ -582,6 +591,10 @@ function Dashboard() {
                   keyHeader="strategy"
                 />
               ) : null}
+              <p className="muted">
+                Accuracy uses decisive outcomes only (wins + losses); the parenthesised range is its 95% Wilson
+                interval. † marks a group with fewer than 10 decisive outcomes — indicative, not a measured edge.
+              </p>
               {performanceValue.note ? <p className="muted">{performanceValue.note}</p> : null}
             </>
           ) : null}

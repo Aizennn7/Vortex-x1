@@ -288,6 +288,8 @@ export interface BreakdownRow {
   draws: number;
   unresolved: number;
   accuracy: number | null;
+  /** 95% Wilson interval for `accuracy` over decisive outcomes; null when none. */
+  accuracyInterval: { lower: number; upper: number } | null;
   accuracyConservative: number | null;
   avgPips: number | null;
   totalPips: number;
@@ -323,6 +325,7 @@ export function normalizeBreakdownRows(rows: unknown[]): BreakdownRow[] {
       const unresolved = finiteOrNull(pick(row, 'unresolved')) ?? 0;
       const decisive = wins + losses;
       const accuracyFromRow = finiteOrNull(pick(row, 'accuracy'));
+      const accuracy = accuracyFromRow ?? (decisive === 0 ? null : Number((wins / decisive).toFixed(4)));
       return {
         key: String(pick(row, 'key', 'pair', 'strategy', 'regime') ?? 'UNKNOWN'),
         settled: finiteOrNull(pick(row, 'settled')) ?? decisive + draws,
@@ -330,7 +333,8 @@ export function normalizeBreakdownRows(rows: unknown[]): BreakdownRow[] {
         losses,
         draws,
         unresolved,
-        accuracy: accuracyFromRow ?? (decisive === 0 ? null : Number((wins / decisive).toFixed(4))),
+        accuracy,
+        accuracyInterval: decisive === 0 ? null : wilsonInterval(wins, decisive),
         accuracyConservative:
           finiteOrNull(pick(row, 'accuracyConservative', 'accuracy_conservative')) ??
           (wins + losses + draws + unresolved === 0
