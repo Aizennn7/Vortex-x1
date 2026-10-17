@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     if (!ping.ok) {
       process.stderr.write(`Database unreachable: ${ping.detail}\n`);
       if (/password authentication failed/i.test(ping.detail)) {
-        process.stderr.write(`\n${authenticationFailureGuidance(target.projectRef)}\n`);
+        process.stderr.write(`\n${authenticationFailureGuidance(target?.projectRef ?? null)}\n`);
       }
       process.exitCode = 1;
       return;
