@@ -181,7 +181,27 @@ describe('calibration curve', () => {
     const bins = confidenceCalibration(signals, 5);
     const highBin = bins[bins.length - 1];
     expect(highBin?.observedWinRate).toBe(1);
+    // `count` is the denominator behind the rate; `sampleSize` is everything.
     expect(bins.reduce((acc, b) => acc + b.count, 0)).toBe(4);
+    expect(bins.reduce((acc, b) => acc + b.sampleSize, 0)).toBe(4);
+  });
+
+  it('reports null rather than 0% for a band with no decisive outcome', () => {
+    const bins = confidenceCalibration(
+      [
+        signal({ confidence: 0.95, outcome: 'UNRESOLVED' }),
+        signal({ confidence: 0.97, outcome: 'DRAW' }),
+        signal({ confidence: 0.66, outcome: 'LOSS' }),
+      ],
+      5,
+    );
+    const top = bins[bins.length - 1];
+    expect(top?.count).toBe(0);
+    expect(top?.sampleSize).toBe(2);
+    expect(top?.observedWinRate).toBeNull();
+    const second = bins[3];
+    expect(second?.observedWinRate).toBe(0);
+    expect(second?.count).toBe(1);
   });
 });
 
