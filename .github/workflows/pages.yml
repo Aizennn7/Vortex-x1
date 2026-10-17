@@ -58,8 +58,8 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - name: Export static status snapshot when DATABASE_URL is available
-        if: env.DATABASE_URL != '' || env.DATABASE_URL_DIRECT != ''
+      - name: Export static status snapshot when it is the selected data source
+        if: env.VITE_RELAY_URL == '' && (env.VITE_SUPABASE_URL == '' || env.VITE_SUPABASE_ANON_KEY == '') && (env.DATABASE_URL != '' || env.DATABASE_URL_DIRECT != '')
         run: npm run snapshot:export
 
       - name: Select and verify dashboard data source configuration
