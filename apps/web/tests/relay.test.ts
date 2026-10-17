@@ -17,7 +17,9 @@ import {
   isSetupRequiredError,
   marketDataBadge,
   marketDataLabel,
+  nextPollDelayMs,
   normalizeBreakdownRows,
+  scanVerdict,
   toScanSummary,
   normalizeWorkerLiveness,
   reduceRelayState,
@@ -743,5 +745,60 @@ describe('opportunity scan block', () => {
   it('rejects non-finite counts rather than passing NaN to the UI', () => {
     const scan = toScanSummary({ ranAt: '2026-03-03T10:03:52.000Z', evaluated: 2, published: Number.NaN });
     expect(scan?.published).toBe(0);
+  });
+});
+
+
+describe('poll backoff', () => {
+  it('polls at the normal cadence while reads succeed', () => {
+    expect(nextPollDelayMs(15_000, 0)).toBe(15_000);
+  });
+
+  it('backs off exponentially after consecutive failures and caps at 8x', () => {
+    expect(nextPollDelayMs(15_000, 1)).toBe(30_000);
+    expect(nextPollDelayMs(15_000, 2)).toBe(60_000);
+    expect(nextPollDelayMs(15_000, 3)).toBe(120_000);
+    // Capped: a long outage must not turn into an hours-long sleep.
+    expect(nextPollDelayMs(15_000, 4)).toBe(120_000);
+    expect(nextPollDelayMs(15_000, 99)).toBe(120_000);
+  });
+
+  it('never divides by zero or returns a negative delay', () => {
+    expect(nextPollDelayMs(0, 3)).toBe(0);
+    expect(nextPollDelayMs(-5, 2)).toBe(0);
+    expect(nextPollDelayMs(15_000, Number.NaN)).toBe(15_000);
+    expect(nextPollDelayMs(15_000, -1)).toBe(15_000);
+  });
+
+  it('classifies HTTP 429 as rate-limited rather than a generic error', () => {
+    // 429 with a "broken" message must still be reported as backpressure.
+    const result = classifyFailure(429, 'Too Many Requests');
+    expect(result).toBe('rate-limited');
+    expect(failureGuidance('rate-limited', 'relay')).toMatch(/rate-limiting/i);
+  });
+});
+
+
+describe('scan verdict', () => {
+  const base = {
+    ranAt: '2026-03-03T10:03:52.000Z',
+    slot: 'slot',
+    evaluated: 8,
+    published: 0,
+    noTrade: true,
+    blocked: 8,
+    bestMiss: 'EUR/USD (confidence)',
+    notes: [] as string[],
+  };
+
+  it('separates "nothing to evaluate" from "everything was rejected"', () => {
+    // Both end with zero published signals, but only one is a trade decision.
+    expect(scanVerdict({ ...base, evaluated: 0, blocked: 0 })).toBe('NO_DATA');
+    expect(scanVerdict(base)).toBe('NO_TRADE');
+    expect(scanVerdict({ ...base, published: 1, blocked: 7 })).toBe('PUBLISHED');
+  });
+
+  it('reports nothing when there is no scan at all', () => {
+    expect(scanVerdict(null)).toBeNull();
   });
 });

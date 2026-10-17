@@ -45,6 +45,7 @@ export type RelayFailureKind =
   | 'unreachable'
   | 'unauthorized'
   | 'not-found'
+  | 'rate-limited'
   | 'error';
 
 export interface RelayResult<T> {
@@ -74,8 +75,28 @@ export function classifyFailure(status: number, message: string): RelayFailureKi
   if (isSetupRequiredError(status, message)) return 'setup-required';
   if (status === 401 || status === 403) return 'unauthorized';
   if (status === 404) return 'not-found';
+  // 429 is its own class: retrying at the normal cadence is exactly the wrong
+  // response, so the UI must be able to say "slow down" rather than "broken".
+  if (status === 429) return 'rate-limited';
   if (status === 0) return 'unreachable';
   return 'error';
+}
+
+/**
+ * Delay before the next poll.
+ *
+ * A polling dashboard that retries a failing read at the normal cadence turns
+ * one transient outage into a request storm — and a 429 means the server has
+ * already said "too many". Failures therefore back off exponentially to at
+ * most eight normal intervals; a single success snaps straight back so
+ * recovery is immediate once the relay is healthy again.
+ */
+export function nextPollDelayMs(baseMs: number, consecutiveFailures: number): number {
+  const base = Math.max(0, Math.floor(baseMs));
+  if (base === 0) return 0;
+  if (!Number.isFinite(consecutiveFailures) || consecutiveFailures <= 0) return base;
+  const factor = Math.min(8, 2 ** Math.min(3, Math.floor(consecutiveFailures)));
+  return base * factor;
 }
 
 /** Human-readable next step for a failed read. */
@@ -93,6 +114,8 @@ export function failureGuidance(kind: RelayFailureKind, mode: DataSourceMode): s
       return 'The read was rejected. Verify VITE_SUPABASE_ANON_KEY holds the public anon/publishable key — a privileged server key belongs only in GitHub Actions secrets, never in browser code.';
     case 'not-found':
       return 'The endpoint answered 404. Verify the relay path or the Supabase project URL.';
+    case 'rate-limited':
+      return 'The data source is rate-limiting this browser (HTTP 429). The dashboard is backing off automatically; no data is being invented while it waits.';
     default:
       return 'The data source answered with an error. The raw message is shown above for diagnosis.';
   }
@@ -487,6 +510,22 @@ export function wilsonInterval(successes: number, total: number, z = 1.96): { lo
     lower: Math.max(0, (centre - spread) / denom),
     upper: Math.min(1, (centre + spread) / denom),
   };
+}
+
+/**
+ * What the last scan actually amounted to.
+ *
+ * `NO_DATA` and `NO_TRADE` are deliberately different verdicts: "no candidate
+ * was available to evaluate" is a data/availability problem, while "candidates
+ * were evaluated and every one failed a gate" is the engine making a decision.
+ * Collapsing them hides outages behind a confident-looking NO-TRADE.
+ */
+export type ScanVerdict = 'PUBLISHED' | 'NO_TRADE' | 'NO_DATA';
+
+export function scanVerdict(scan: ScanSummary | null): ScanVerdict | null {
+  if (!scan) return null;
+  if (scan.published > 0) return 'PUBLISHED';
+  return scan.evaluated > 0 ? 'NO_TRADE' : 'NO_DATA';
 }
 
 /**

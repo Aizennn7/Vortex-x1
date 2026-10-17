@@ -21,9 +21,11 @@ import {
   SUPABASE_URL,
   buildDashboardBanner,
   failureGuidance,
+  nextPollDelayMs,
   marketDataBadge as marketDataBadgeFor,
   marketDataLabel,
   reduceRelayState,
+  scanVerdict,
   relay,
   stalePairs as stalePairsOf,
   wilsonInterval,
@@ -49,22 +51,47 @@ function useRelay<T>(
   pollMs: number,
 ): RelayState<T> & { refresh: () => Promise<void> } {
   const [state, setState] = useState<RelayState<T>>({ result: { state: 'loading' }, lastError: null, refreshedAt: null });
+
+  /**
+   * The loader is held in a ref, not in the effect's dependency list.
+   *
+   * Every caller passes an inline arrow (`() => relay.signals(25)`), so the
+   * function identity changes on each render. Dependencies of
+   * `[refresh, pollMs]` therefore re-ran the effect on every render, which
+   * fired an immediate fetch, which set state, which rendered again: a
+   * self-sustaining request loop. It never settled while a read was failing,
+   * because the error state is always a fresh object, so a single 429 or
+   * outage became a storm that kept the limiter tripped and the panel stuck.
+   * Polling is driven by a timer instead, and failures back off.
+   */
+  const loaderRef = useRef(loader);
+  loaderRef.current = loader;
   const mounted = useRef(true);
+  const failures = useRef(0);
 
   const refresh = useCallback(async () => {
-    const response = await loader();
+    const response = await loaderRef.current();
     if (!mounted.current) return;
+    failures.current = response.ok ? 0 : failures.current + 1;
     setState((previous) => reduceRelayState(previous, response));
-  }, [loader]);
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
-    void refresh();
-    if (pollMs <= 0) return undefined;
-    const timer = setInterval(() => void refresh(), pollMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const schedule = () => {
+      if (cancelled || pollMs <= 0) return;
+      timer = setTimeout(async () => {
+        await refresh();
+        schedule();
+      }, nextPollDelayMs(pollMs, failures.current));
+    };
+    void refresh().then(schedule);
     return () => {
+      cancelled = true;
       mounted.current = false;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [refresh, pollMs]);
 
@@ -260,6 +287,7 @@ function Dashboard() {
   const model = summaryValue?.model ?? null;
   const learning = summaryValue?.learning ?? null;
   const scan = summaryValue?.scan ?? null;
+  const verdict = scanVerdict(scan);
 
 
   const stalePairs = useMemo(() => stalePairsOf(marketData), [marketData]);
@@ -353,11 +381,13 @@ function Dashboard() {
           status={
             summary.result.state !== 'ready'
               ? undefined
-              : scan
-                ? scan.published > 0
-                  ? 'CONNECTED'
-                  : 'IDLE'
-                : undefined
+              : verdict === 'PUBLISHED'
+                ? 'CONNECTED'
+                : verdict === 'NO_TRADE'
+                  ? 'NO TRADE'
+                  : verdict === 'NO_DATA'
+                    ? 'NO DATA'
+                    : undefined
           }
         >
           {summary.result.state === 'loading' ? <Loading what="the last scan" /> : null}
@@ -386,14 +416,16 @@ function Dashboard() {
                 </div>
                 <div>
                   <dt>rejected by gates</dt>
-                  <dd>{scan.blocked}</dd>
+                  <dd>{scan.evaluated > 0 ? scan.blocked : '—'}</dd>
                 </div>
                 <div>
                   <dt>outcome of the scan</dt>
                   <dd>
-                    {scan.published > 0
+                    {verdict === 'PUBLISHED'
                       ? `${scan.published} opportunity(ies) cleared every gate`
-                      : 'NO-TRADE — no candidate cleared every gate'}
+                      : verdict === 'NO_TRADE'
+                        ? 'NO-TRADE — candidates were evaluated and none cleared every gate'
+                        : 'NO DATA — there was nothing to evaluate (market closed or no usable candles)'}
                   </dd>
                 </div>
                 {scan.bestMiss ? (
@@ -413,9 +445,11 @@ function Dashboard() {
                 </ul>
               ) : null}
               <p className="muted">
-                NO-TRADE is the engine&apos;s decision, not an outage: every candidate failed at least one quality,
-                edge or risk gate. The failed gate names are listed above. A scan that did not run at all is reported
-                as a stale job, not as NO-TRADE.
+                {verdict === 'NO_TRADE'
+                  ? "NO-TRADE is the engine's decision, not an outage: candidates were evaluated and every one failed at least one quality, edge or risk gate. The closest miss and its failed gates are listed above."
+                  : verdict === 'NO_DATA'
+                    ? 'This slot had no candidate to judge — the market was closed, or the candles needed to price a decision were not available. That is an availability condition, not a trade decision, and it is never counted as a loss or a win.'
+                    : 'A scan that did not run at all is reported as a stale job, never as NO-TRADE.'}
               </p>
             </>
           ) : null}

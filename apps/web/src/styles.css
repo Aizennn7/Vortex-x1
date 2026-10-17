@@ -154,7 +154,8 @@ code:focus-visible {
 .badge-degraded,
 .badge-not-verified,
 .badge-configuration-required,
-.badge-idle {
+.badge-idle,
+.badge-rate-limited {
   color: var(--warn);
 }
 
