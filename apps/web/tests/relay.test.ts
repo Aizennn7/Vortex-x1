@@ -14,6 +14,7 @@ import {
   createSnapshotClient,
   createSupabasePublicClient,
   failureGuidance,
+  isFxMarketOpenAt,
   isSetupRequiredError,
   marketDataBadge,
   marketDataLabel,
@@ -817,5 +818,32 @@ describe('scan verdict', () => {
 
   it('reports nothing when there is no scan at all', () => {
     expect(scanVerdict(null)).toBeNull();
+  });
+});
+
+describe('FX market-open badge', () => {
+  it('matches the engine clock across a full simulated week', async () => {
+    // The worker suppresses ingestion and signals using
+    // isMarketOpen from @vortex/core; the dashboard badge must
+    // never disagree with it, or it claims a live market during
+    // an hour the engine already treats as closed.
+    const { isMarketOpen } = await import('@vortex/core');
+    const sunday21Utc = Date.UTC(2026, 2, 1, 21, 0, 0); // a Sunday
+    for (let minute = 0; minute < 7 * 24 * 60; minute += 15) {
+      const at = new Date(sunday21Utc + minute * 60_000);
+      expect(isFxMarketOpenAt(at)).toBe(isMarketOpen(at));
+    }
+  });
+
+  it('closes the market at the Friday 21:00 UTC boundary', () => {
+    const friday = Date.UTC(2026, 2, 6); // 2026-03-06 is a Friday
+    expect(isFxMarketOpenAt(new Date(friday + 20 * 3_600_000 + 59 * 60_000))).toBe(true);
+    expect(isFxMarketOpenAt(new Date(friday + 21 * 3_600_000))).toBe(false);
+  });
+
+  it('opens the market at the Sunday 21:00 UTC boundary', () => {
+    const sunday = Date.UTC(2026, 2, 8); // 2026-03-08 is a Sunday
+    expect(isFxMarketOpenAt(new Date(sunday + 20 * 3_600_000 + 59 * 60_000))).toBe(false);
+    expect(isFxMarketOpenAt(new Date(sunday + 21 * 3_600_000))).toBe(true);
   });
 });

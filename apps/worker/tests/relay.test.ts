@@ -12,12 +12,14 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import {
   encryptSecret,
+  finishLearningRun,
   insertModelVersion,
   insertSignal,
   keyFingerprint,
   listAudit,
   listKeys,
   listModelVersions,
+  startLearningRun,
   updateKey,
 } from '@vortex/db';
 import { maskKey } from '@vortex/core';
@@ -658,4 +660,135 @@ describe('privileged plane — operations', () => {
     });
     expect(status).toBe(413);
   });
+
+  it('validates the admin log limit like every other route', async () => {
+    // `limit=abc` used to reach the SQL as NaN and surface the
+    // driver's error text as a 500.
+    const { status, body } = await api('/admin/logs?limit=abc', { headers: admin });
+    expect(status).toBe(400);
+    expect(body.error.code).toBe('invalid_request');
+    expect(body.error.message).toContain('limit');
+  });
+
+  it('surfaces the learning run dataset window that is stored', async () => {
+    // The run records dataset_from/dataset_to at finish time; the
+    // summary used to hard-code nulls, so the dashboard could never
+    // show what a model was actually trained on. A dedicated relay
+    // instance is used because the shared harness's public rate
+    // bucket is exhausted by the flood test above.
+    const fresh = await createHarness({ env: { VORTEX_WORKER_ID: 'learning-window-test' } });
+    const server2 = createRelay(fresh.runtime);
+    await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+    const address = server2.address() as AddressInfo;
+    try {
+      const runId = await startLearningRun(fresh.client, { workerId: 'relay-learning-test' });
+      await finishLearningRun(fresh.client, {
+        id: runId,
+        status: 'SUCCEEDED',
+        datasetChecksum: 'checksum-relay-learning',
+        datasetSize: 250,
+        datasetFrom: '2026-01-01T00:00:00.000Z',
+        datasetTo: '2026-03-01T00:00:00.000Z',
+      });
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/summary`);
+      const body = (await response.json()) as { data: { learning: { lastRun: Record<string, unknown> | null } } };
+      expect(response.status).toBe(200);
+      expect(body.data.learning.lastRun).toMatchObject({
+        status: 'SUCCEEDED',
+        datasetSize: 250,
+        datasetFrom: '2026-01-01T00:00:00.000Z',
+        datasetTo: '2026-03-01T00:00:00.000Z',
+      });
+    } finally {
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+      await fresh.close();
+    }
+  });
+
+  it('reports telegram delivery totals from the whole ledger', async () => {
+    // The counts used to be computed over the 50 most recent
+    // deliveries only — a bounded sample presented as a total.
+    const fresh = await createHarness({ env: { VORTEX_WORKER_ID: 'delivery-totals-test' } });
+    const server2 = createRelay(fresh.runtime);
+    await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+    const address = server2.address() as AddressInfo;
+    try {
+      const signal = await insertSignal(fresh.client, {
+        idempotencyKey: 'relay|EUR/USD|2026-04-02T10:05:00.000Z|BUY|relay-engine',
+        pair: 'EUR/USD',
+        timeframe: 'M1',
+        direction: 'BUY',
+        decision: 'BUY',
+        strategy: 'trend_follow',
+        confidence: 0.71,
+        regime: 'TREND_UP',
+        engineVersion: 'relay-engine',
+        scheduledEntryAt: '2026-04-02T10:05:00.000Z',
+        publishAt: '2026-04-02T10:04:00.000Z',
+        horizonSeconds: 60,
+        referencePrice: 1.085,
+        stopPips: 10,
+        targetPips: 14,
+        rewardRisk: 1.4,
+        spreadPips: 0.8,
+        reasons: ['delivery ledger test'],
+        warnings: [],
+        context: { session: 'LONDON', spreadPips: 0.8, spreadSource: 'modelled' } as never,
+        features: [1, 0.5, 0.25],
+        modelVersionId: null,
+        modelProbability: null,
+      });
+      expect(signal.created).toBe(true);
+      await fresh.client.query(
+        `insert into signal_deliveries (signal_id, channel_label, kind, status, attempts)
+         select $1, 'relay-test-' || g, 'PUBLISH', 'SENT', 1 from generate_series(1, 60) g`,
+        [signal.record!.id],
+      );
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/summary`);
+      const body = (await response.json()) as { data: { telegram: Record<string, number> } };
+      expect(response.status).toBe(200);
+      expect(body.data.telegram.sent).toBe(60);
+      expect(body.data.telegram.failed).toBe(0);
+      expect(body.data.telegram.unconfirmed).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+      await fresh.close();
+    }
+  });
+});
+
+describe('privileged plane — authorization flood damping', () => {
+  it('locks an IP out of the admin plane after repeated failed authorizations', async () => {
+    // A dedicated relay instance so the shared harness's buckets
+    // are not affected by the deliberate failures below.
+    const fresh = await createHarness({ env: { VORTEX_WORKER_ID: 'lockout-test-worker' } });
+    const server2 = createRelay(fresh.runtime);
+    await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+    const address = server2.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+    try {
+      // A valid token still works before any failures.
+      const good = await fetch(`${origin}/admin/status`, { headers: admin });
+      expect(good.status).toBe(200);
+
+      for (let i = 0; i < 10; i += 1) {
+        const bad = await fetch(`${origin}/admin/status`, {
+          headers: { authorization: `Bearer wrong-token-${i}` },
+        });
+        expect(bad.status).toBe(401);
+      }
+      // The eleventh attempt — even with the correct token — is
+      // damped for the rest of the window.
+      const locked = await fetch(`${origin}/admin/status`, { headers: admin });
+      expect(locked.status).toBe(429);
+      expect(locked.headers.get('content-type')).toContain('application/json');
+
+      // The public plane is untouched by admin-plane failures.
+      const publicStillOk = await fetch(`${origin}/health`);
+      expect(publicStillOk.status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+      await fresh.close();
+    }
+  }, 30_000);
 });
