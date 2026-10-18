@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Check required secrets and dashboard variables without printing values
+      - name: Check required engine secrets without printing values
         shell: bash
         run: |
           set -euo pipefail
@@ -59,22 +59,32 @@ jobs:
           fi
           check_value VORTEX_SECRET_KEY "$VORTEX_SECRET_KEY"
           check_value TWELVEDATA_API_KEY "$TWELVEDATA_API_KEY"
-          check_value VITE_SCAN_TRIGGER_URL "$VITE_SCAN_TRIGGER_URL"
-          check_value VITE_TURNSTILE_SITE_KEY "$VITE_TURNSTILE_SITE_KEY"
           if [ "$missing" -ne 0 ]; then
-            echo "::error::Add the missing values, then rerun this workflow."
+            echo "::error::Add the missing engine values, then rerun this workflow."
             exit 1
           fi
-      - name: Verify protected Supabase scan trigger is deployed and configured
+      - name: Report optional dashboard scan-trigger configuration
+        shell: bash
+        run: |
+          if [ -z "$VITE_SCAN_TRIGGER_URL" ] || [ -z "$VITE_TURNSTILE_SITE_KEY" ]; then
+            echo "::warning::Dashboard scan buttons are not fully configured. Set repository Actions variables VITE_SCAN_TRIGGER_URL and VITE_TURNSTILE_SITE_KEY to enable them; this does not block engine/database/provider verification."
+          else
+            echo "OK: dashboard scan-trigger variables are present."
+          fi
+      - name: Verify protected Supabase scan trigger when configured
+        if: env.VITE_SCAN_TRIGGER_URL != '' && env.VITE_TURNSTILE_SITE_KEY != ''
         shell: bash
         run: |
           set -euo pipefail
-          status="$(curl --silent --show-error --output /tmp/scan-trigger-response.txt --write-out '%{http_code}' --request POST "$VITE_SCAN_TRIGGER_URL" --header 'Origin: https://aizennn7.github.io' --header 'Content-Type: application/json' --data '{}')"
+          status="$(curl --connect-timeout 10 --max-time 20 --silent --show-error --output /tmp/scan-trigger-response.txt --write-out '%{http_code}' --request POST "$VITE_SCAN_TRIGGER_URL" --header 'Origin: https://aizennn7.github.io' --header 'Content-Type: application/json' --data '{}')" || {
+            echo "::error::Could not reach the configured scan-trigger URL. Verify VITE_SCAN_TRIGGER_URL and the Supabase deployment."
+            exit 1
+          }
           if [ "$status" != "400" ]; then
-            echo "::error::Scan trigger check returned HTTP $status. Expected 400 from the deployed, configured endpoint. Check the Supabase function URL and its GITHUB_ACTIONS_TOKEN / TURNSTILE_SECRET_KEY / TURNSTILE_HOSTNAME secrets."
+            echo "::error::Scan trigger check returned HTTP $status, expected 400 for the deliberately invalid test payload. Check Supabase function deployment and its GITHUB_ACTIONS_TOKEN / TURNSTILE_SECRET_KEY / TURNSTILE_HOSTNAME secrets."
             exit 1
           fi
-          echo "OK: scan trigger is reachable and reports its required secrets as configured (invalid test payload rejected as expected)."
+          echo "OK: scan trigger endpoint is reachable and rejects an invalid test payload."
       - name: Install dependencies
         run: npm ci --include=dev
       - name: Verify database connection and migration status
