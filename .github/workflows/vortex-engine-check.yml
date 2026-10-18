@@ -65,6 +65,16 @@ jobs:
             echo "::error::Add the missing values, then rerun this workflow."
             exit 1
           fi
+      - name: Verify protected Supabase scan trigger is deployed and configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --output /tmp/scan-trigger-response.txt --write-out '%{http_code}' --request POST "$VITE_SCAN_TRIGGER_URL" --header 'Origin: https://aizennn7.github.io' --header 'Content-Type: application/json' --data '{}')"
+          if [ "$status" != "400" ]; then
+            echo "::error::Scan trigger check returned HTTP $status. Expected 400 from the deployed, configured endpoint. Check the Supabase function URL and its GITHUB_ACTIONS_TOKEN / TURNSTILE_SECRET_KEY / TURNSTILE_HOSTNAME secrets."
+            exit 1
+          fi
+          echo "OK: scan trigger is reachable and reports its required secrets as configured (invalid test payload rejected as expected)."
       - name: Install dependencies
         run: npm ci --include=dev
       - name: Verify database connection and migration status
