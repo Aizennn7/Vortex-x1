@@ -1,0 +1,116 @@
+name: VORTEX Engine Check & Start
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Verify configuration only, or verify and start the full engine'
+        required: true
+        default: verify
+        type: choice
+        options:
+          - verify
+          - start
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vortex-engine-check
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify keys, database, provider, and dashboard config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NODE_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
+      TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      VITE_SCAN_TRIGGER_URL: ${{ vars.VITE_SCAN_TRIGGER_URL }}
+      VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check required secrets and dashboard variables without printing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          check_value() {
+            if [ -z "$2" ]; then
+              echo "::error::$1 is missing in GitHub Settings → Secrets and variables → Actions."
+              missing=1
+            else
+              echo "OK: $1 is configured."
+            fi
+          }
+          if [ -z "$DATABASE_URL" ] && [ -z "$DATABASE_URL_DIRECT" ]; then
+            echo "::error::DATABASE_URL or DATABASE_URL_DIRECT is missing."
+            missing=1
+          else
+            echo "OK: database connection secret is present."
+          fi
+          check_value VORTEX_SECRET_KEY "$VORTEX_SECRET_KEY"
+          check_value TWELVEDATA_API_KEY "$TWELVEDATA_API_KEY"
+          check_value VITE_SCAN_TRIGGER_URL "$VITE_SCAN_TRIGGER_URL"
+          check_value VITE_TURNSTILE_SITE_KEY "$VITE_TURNSTILE_SITE_KEY"
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Add the missing values, then rerun this workflow."
+            exit 1
+          fi
+      - name: Verify protected Supabase scan trigger is deployed and configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --show-error --output /tmp/scan-trigger-response.txt --write-out '%{http_code}' --request POST "$VITE_SCAN_TRIGGER_URL" --header 'Origin: https://aizennn7.github.io' --header 'Content-Type: application/json' --data '{}')"
+          if [ "$status" != "400" ]; then
+            echo "::error::Scan trigger check returned HTTP $status. Expected 400 from the deployed, configured endpoint. Check the Supabase function URL and its GITHUB_ACTIONS_TOKEN / TURNSTILE_SECRET_KEY / TURNSTILE_HOSTNAME secrets."
+            exit 1
+          fi
+          echo "OK: scan trigger is reachable and reports its required secrets as configured (invalid test payload rejected as expected)."
+      - name: Install dependencies
+        run: npm ci --include=dev
+      - name: Verify database connection and migration status
+        run: |
+          npm run db:diagnose -- --require-configured
+          npm run migrate:status
+      - name: Verify Twelve Data API key and provider connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --get 'https://api.twelvedata.com/price' --data-urlencode 'symbol=EUR/USD' --data-urlencode "apikey=$TWELVEDATA_API_KEY" || true)"
+          if [ -z "$response" ] || ! printf '%s' "$response" | node -e '
+            let s=""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => {
+              try { const d=JSON.parse(s); process.exit(typeof d.price === "string" && Number.isFinite(Number(d.price)) ? 0 : 1); }
+              catch { process.exit(1); }
+            });
+          '; then
+            echo "::error::Twelve Data verification failed. Check the key, provider access, and API quota. The key was not printed."
+            exit 1
+          fi
+          echo "OK: Twelve Data returned a valid EUR/USD price."
+      - name: Start full VORTEX engine only when requested
+        if: inputs.action == 'start'
+        env:
+          VORTEX_ROLE: worker
+          VORTEX_WORKER_ID: gha-engine-start-${{ github.run_id }}
+          VORTEX_INSTANCE_LABEL: github-actions-engine-start
+          VORTEX_ADMIN_TOKEN: ${{ secrets.VORTEX_ADMIN_TOKEN }}
+          TWELVEDATA_API_KEY_2: ${{ secrets.TWELVEDATA_API_KEY_2 }}
+          TWELVEDATA_API_KEY_3: ${{ secrets.TWELVEDATA_API_KEY_3 }}
+          TWELVEDATA_API_KEY_4: ${{ secrets.TWELVEDATA_API_KEY_4 }}
+          VORTEX_ALLOW_SYNTHETIC_SIGNALS: 'false'
+          VORTEX_PROVIDER: ${{ vars.VORTEX_PROVIDER || 'twelvedata' }}
+          VORTEX_PAIRS: ${{ vars.VORTEX_PAIRS || 'EUR/USD,GBP/USD' }}
+          VORTEX_PROVIDER_RPM_PER_KEY: ${{ vars.VORTEX_PROVIDER_RPM_PER_KEY || '8' }}
+          VORTEX_PROVIDER_RPD_PER_KEY: ${{ vars.VORTEX_PROVIDER_RPD_PER_KEY || '800' }}
+          VORTEX_PROVIDER_HEADROOM_PERCENT: ${{ vars.VORTEX_PROVIDER_HEADROOM_PERCENT || '15' }}
+          VORTEX_TELEGRAM_ENABLED: 'false'
+        run: npm run job:run -- --job=all
