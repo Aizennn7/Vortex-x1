@@ -41,7 +41,7 @@ serve(async (req) => {
   const dispatch = await fetch("https://api.github.com/repos/Aizennn7/Vortex-x1/actions/workflows/vortex-jobs.yml/dispatches", {
     method: "POST",
     headers: { Authorization: `Bearer ${githubToken}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
-    body: JSON.stringify({ ref: "main", inputs: { job: "cycle" } }),
+    body: JSON.stringify({ ref: "main", inputs: { job: "all" } }),
   });
   if (!dispatch.ok) return Response.json({ error: "GitHub did not accept the scan request" }, { status: 502, headers: corsHeaders });
   return Response.json({ accepted: true, profile, mode: "cycle" }, { status: 202, headers: corsHeaders });
