@@ -265,12 +265,28 @@ function Dashboard() {
   const summary = useRelay<SummaryPayload>(relay.summary, 15_000);
   const signals = useRelay<{ signals: SignalRow[]; count: number }>(() => relay.signals(25), 30_000);
   const [signalFormat, setSignalFormat] = useState<'compact' | 'detailed' | 'telegram'>('compact');
+  const [signalSearch, setSignalSearch] = useState('');
+  const [signalOutcomeFilter, setSignalOutcomeFilter] = useState<'all' | 'pending' | 'win' | 'loss' | 'draw'>('all');
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
   const [adminToken, setAdminToken] = useState('');
   const [startingProfile, setStartingProfile] = useState<'VIP' | 'Session' | null>(null);
 
   const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
+  const filteredSignals = useMemo(() => {
+    const rows = signals.result.state === 'ready' ? signals.result.value.signals : [];
+    const query = signalSearch.trim().toLocaleLowerCase();
+    return rows.filter((signal) => {
+      const searchable = [signal.pair, signal.decision, signal.strategy, signal.status, signal.outcome ?? 'pending'].join(' ').toLocaleLowerCase();
+      if (query && !searchable.includes(query)) return false;
+      const outcome = (signal.outcome ?? '').toLocaleLowerCase();
+      if (signalOutcomeFilter === 'pending') return !outcome || /pending|unresolved|in.flight/.test(outcome);
+      if (signalOutcomeFilter === 'win') return outcome === 'win' || outcome === 'won';
+      if (signalOutcomeFilter === 'loss') return outcome === 'loss' || outcome === 'lost';
+      if (signalOutcomeFilter === 'draw') return outcome === 'draw' || outcome === 'push';
+      return true;
+    });
+  }, [signals.result, signalSearch, signalOutcomeFilter]);
   const formatSignal = useCallback((signal: SignalRow, format: 'compact' | 'detailed' | 'telegram') => {
     const time = utcLabel(signal.scheduledEntryAt);
     const side = signal.decision.toUpperCase();
@@ -345,6 +361,27 @@ function Dashboard() {
       setStartingProfile(null);
     }
   }, [adminToken]);
+
+  const exportSignalRegistry = useCallback(() => {
+    if (filteredSignals.length === 0) {
+      setSignalActionStatus('There are no matching signals to export.');
+      return;
+    }
+    const columns = ['id', 'pair', 'decision', 'scheduledEntryAtUtc', 'strategy', 'confidenceRankingScore', 'status', 'outcome', 'realizedPips'];
+    const quote = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
+    const rows = filteredSignals.map((signal) => [signal.id, signal.pair, signal.decision, signal.scheduledEntryAt, signal.strategy, signal.confidence, signal.status, signal.outcome, signal.realizedPips]);
+    const csv = [columns.map(quote).join(','), ...rows.map((row) => row.map(quote).join(','))].join('\\r\\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'vortex-signal-registry.csv';
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setSignalActionStatus('Exported ' + filteredSignals.length + ' filtered signal record(s) to CSV.');
+  }, [filteredSignals]);
 
   const copyLatestSignal = useCallback(async () => {
     if (!latestSignal) {
@@ -915,10 +952,30 @@ function Dashboard() {
               No signals published yet. That is a normal state: the engine only publishes when every gate passes.
             </p>
           ) : (
-            <div className="table-scroll">
+            <>
+              <div className="signal-registry-controls" aria-label="Filter and export signal registry">
+                <label>
+                  <span>Search registry</span>
+                  <input type="search" value={signalSearch} onChange={(event) => setSignalSearch(event.target.value)} placeholder="Pair, strategy, side, status…" />
+                </label>
+                <label>
+                  <span>Outcome</span>
+                  <select value={signalOutcomeFilter} onChange={(event) => setSignalOutcomeFilter(event.target.value as 'all' | 'pending' | 'win' | 'loss' | 'draw')}>
+                    <option value="all">All outcomes</option>
+                    <option value="pending">Pending / unresolved</option>
+                    <option value="win">Wins</option>
+                    <option value="loss">Losses</option>
+                    <option value="draw">Draws / pushes</option>
+                  </select>
+                </label>
+                <button type="button" onClick={exportSignalRegistry} disabled={filteredSignals.length === 0}>Export filtered CSV</button>
+                <span className="muted" aria-live="polite">Showing {filteredSignals.length} of {signals.result.value.signals.length}</span>
+              </div>
+              {filteredSignals.length === 0 ? <p className="muted">No published signals match these filters. Clear the search or choose “All outcomes”.</p> : null}
+              <div className="table-scroll">
               <table>
                 <caption className="muted">
-                  Newest {signals.result.value.signals.length} published signals. All times are UTC. Paper results are net
+                  Showing {filteredSignals.length} of {signals.result.value.signals.length} published signals. All times are UTC. Paper results are net
                   of the modelled spread and slippage and are not realised profit.
                 </caption>
                 <thead>
@@ -934,7 +991,7 @@ function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {signals.result.value.signals.map((signal) => (
+                  {filteredSignals.map((signal) => (
                     <tr key={signal.id}>
                       <td>{signal.pair}</td>
                       <td>{signal.decision}</td>
@@ -948,7 +1005,8 @@ function Dashboard() {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )
         ) : null}
         <p className="muted">
