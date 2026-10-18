@@ -221,6 +221,14 @@ describe('relay client', () => {
     expect(summary.data?.providerBudget?.dayRemainingPercent).toBe(90);
     expect(summary.data?.signals?.accuracy).toBe(60);
     expect(summary.data?.marketData[0]?.stale).toBe(true);
+
+    const candleHistory = await supa.candles?.('EUR/USD', 10);
+    expect(candleHistory?.ok).toBe(true);
+    expect(candleHistory?.data).toMatchObject({ pair: 'EUR/USD', timeframe: 'M1', count: 0, finalOnly: true });
+    const candleRequest = String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[0]);
+    expect(candleRequest).toContain('public_candles');
+    expect(candleRequest).toContain('is_final=eq.true');
+    expect(candleRequest).toContain('limit=10');
   });
 
   it('reads static snapshot.json and dynamically ages worker and candle staleness', async () => {
