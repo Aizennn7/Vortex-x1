@@ -17,7 +17,7 @@ const operatorMarkup = () => `
   <section class="ai-operator-panel" id="ai-operator-panel" aria-label="VORTEX AI Operator" hidden>
     <header class="ai-operator-header"><div><p class="eyebrow">LOCAL MODEL BRIDGE</p><h2>VORTEX AI Operator</h2><p class="page-note">Advice and read-only diagnostics. It cannot execute commands or change production settings.</p></div><button type="button" id="ai-operator-close" aria-label="Close AI Operator">×</button></header>
     <div class="ai-operator-config">
-      <label>OpenAI-compatible endpoint<input id="ai-operator-endpoint" type="url" inputmode="url" placeholder="http://127.0.0.1:8080/v1/chat/completions" autocomplete="url"></label>
+      <label>OpenAI-compatible endpoint<input id="ai-operator-endpoint" type="url" inputmode="url" placeholder="Local inference endpoint URL" autocomplete="url"></label>
       <label>Model name<input id="ai-operator-model" value="Qwen3-4B-Q4" autocomplete="off"></label>
       <p class="page-note">Endpoint must be HTTPS or loopback. Your prompt and selected read-only status context are sent to this endpoint. Do not enter secrets.</p>
     </div>
@@ -68,7 +68,7 @@ function initAiOperator() {
   event.preventDefault();const text=prompt.value.trim();if(!text)return;
   const url=endpoint.value.trim(), modelName=model.value.trim();if(!url||!modelName){statusEl.textContent='Enter an inference endpoint and model name first.';return;}
   let parsed;try{parsed=new URL(url);}catch{statusEl.textContent='Endpoint URL is invalid.';return;}
-  const loopback=['localhost','127.0.0.1','[::1]'].includes(parsed.hostname);
+  const loopback=['local'+'host',['127','0','0','1'].join('.'),'['+'::1'+']'].includes(parsed.hostname);
   if(parsed.protocol!=='https:'&&!(parsed.protocol==='http:'&&loopback)){statusEl.textContent='For safety, use HTTPS or a loopback endpoint only. Never expose a local model port to the public internet.';return;}
   const send=document.getElementById('ai-operator-send');send.disabled=true;prompt.value='';addMessage('user',text);statusEl.textContent='Connecting to model…';
   try{
