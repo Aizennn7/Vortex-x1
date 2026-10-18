@@ -15,6 +15,7 @@ NEXUS is currently readable through the connected GitHub integration but reports
 
 - Apply NEXUS's midnight-ocean Liquid Glass visual direction to VORTEX's existing React dashboard, including responsive surfaces, keyboard focus, and reduced-motion support.
 - Add a searchable, outcome-filterable signal registry and CSV export of the currently loaded, filtered records. Export includes UTC entry time, ranking score, status, outcome and paper pips; it does not imply that confidence is a win probability.
+- Add a market explorer chart backed by stored, final M1 candles. The HTTP endpoint is read-only, pair-allowlisted, and capped at 120 rows; Supabase mode uses the RLS-protected `public_candles` view. No synthetic candle values are generated.
 - Keep VORTEX's live data states, UTC timestamps, failure/backoff behavior, stale-data warnings, NO-TRADE/NO-DATA distinction, operational health, provider budget, model validation and learning views as the canonical source of truth.
 - Do not run NEXUS's independent browser prediction engine alongside VORTEX. Its current audit documents settlement, candle timing and persistence risks; those patterns are not safe to transplant as-is.
 - The new registry interactions are read-only. No signal gates, provider usage, schema, delivery, credentials, schedules, model weights or settlement behavior are changed by these UI features.
@@ -25,7 +26,7 @@ NEXUS is currently readable through the connected GitHub integration but reports
 |---|---|---|
 | Ocean-glass design system and responsive shell | Reuse the visual language in VORTEX's React dashboard | Desktop/mobile checks; keyboard focus and reduced-motion support; no change to data behavior |
 | Signal registry and detail history | Existing durable VORTEX rows plus searchable/filterable UI and CSV export in this PR | No client-created outcomes; export only real records loaded from the configured data source |
-| Market explorer and candle chart | Existing VORTEX market-data quality matrix is retained; a true candle chart requires a supported candle-read contract before it can be safely added | No invented candles or prices; stale/feed provenance must be visible |
+| Market explorer and candle chart | This PR adds the final-M1-candle read contract for the relay and Supabase public view, plus a chart with OHLC hover details | Read-only, bounded, final candles only; show actual provider/timestamp provenance and empty/error states |
 | Operational health matrix | Build on VORTEX's existing health, job, provider-budget and learning read models | Every state has a real source and timestamp; no fake liveness between Actions runs |
 | Learning and model validation | Retain VORTEX's walk-forward validation, holdout/embargo, calibration and promotion gates | Shadow-only training first; model promotion requires recorded validation evidence and rollback |
 | Telegram / outbound notifications | Keep delivery separately configured and disabled by default | Idempotent delivery ledger; no secrets in the browser; no implicit activation |
