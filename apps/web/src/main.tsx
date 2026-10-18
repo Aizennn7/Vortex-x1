@@ -1,5 +1,5 @@
 /**
- * VORTEX SI status board.
+ * VORTEX SI command dashboard.
  *
  * This is the read-only operational dashboard: it renders only measured facts
  * and states plainly when something is not configured, not reachable, stale,
@@ -271,7 +271,9 @@ function Dashboard() {
   const [selectedCandlePair, setSelectedCandlePair] = useState('EUR/USD');
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
-  const [adminToken, setAdminToken] = useState('');
+  const scanTriggerUrl = (import.meta.env.VITE_SCAN_TRIGGER_URL as string | undefined)?.trim() ?? '';
+  const turnstileSiteKey = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined)?.trim() ?? '';
+  const [turnstileToken, setTurnstileToken] = useState('');
   const [startingProfile, setStartingProfile] = useState<'VIP' | 'Session' | null>(null);
 
   const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
@@ -335,34 +337,28 @@ function Dashboard() {
   }, [signals.refresh]);
 
   const startSignalScan = useCallback(async (profile: 'VIP' | 'Session') => {
-    if (!adminToken.trim()) {
-      setSignalActionStatus('Enter a repository-scoped GitHub fine-grained token with Actions: write permission. It stays in page memory only.');
+    if (!scanTriggerUrl || !turnstileSiteKey) {
+      setSignalActionStatus('Scan trigger is not configured yet. Deploy the protected scan-trigger function and set VITE_SCAN_TRIGGER_URL in the Pages build environment.');
       return;
     }
     setStartingProfile(profile);
-    setSignalActionStatus('Requesting GitHub Actions to run a fresh ' + profile + ' signal scan…');
+    setSignalActionStatus('Requesting a fresh ' + profile + ' scan…');
     try {
-      const response = await fetch('https://api.github.com/repos/Aizennn7/Vortex-x1/actions/workflows/vortex-jobs.yml/dispatches', {
+      const response = await fetch(scanTriggerUrl, {
         method: 'POST',
-        headers: {
-          accept: 'application/vnd.github+json',
-          authorization: 'Bearer ' + adminToken.trim(),
-          'X-GitHub-Api-Version': '2022-11-28',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ ref: 'main', inputs: { job: 'signals' } }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ profile, turnstileToken }),
       });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error('GitHub Actions dispatch failed (HTTP ' + response.status + '): ' + (detail || response.statusText));
-      }
-      setSignalActionStatus(profile + ' start accepted by GitHub Actions. The shared signal scan is queued; eligible signals will be published by the pipeline when it completes. No-trade is possible when no opportunity passes the gates. Track progress in Actions.');
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'Scan trigger rejected (HTTP ' + response.status + ')');
+      setSignalActionStatus(profile + ' scan accepted. The shared pipeline is queued; the dashboard refreshes published signals automatically. A scan may produce no signal when no opportunity passes the quality gates.');
+      await Promise.all([signals.refresh(), summary.refresh()]);
     } catch (error) {
-      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message + '. Check the token scope (Actions: write), token expiry, and repository access.');
+      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message);
     } finally {
       setStartingProfile(null);
     }
-  }, [adminToken]);
+  }, [scanTriggerUrl, turnstileSiteKey, turnstileToken, signals.refresh, summary.refresh]);
 
   const exportSignalRegistry = useCallback(() => {
     if (filteredSignals.length === 0) {
@@ -522,19 +518,19 @@ function Dashboard() {
 
       <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
         <div className="hero-copy">
-          <p className="eyebrow"><span className="status-orb" /> MARKET RESEARCH WORKSPACE</p>
-          <h2 id="hero-title">Read the market.<br /><em>Move with intention.</em></h2>
-          <p className="hero-description">A quieter view of the signal, the session, and the system behind every decision.</p>
+          <p className="eyebrow"><span className="status-orb" /> VORTEX SIGNAL INTELLIGENCE</p>
+          <h2 id="hero-title">Predict the market.<br /><em>Learn. Adapt. Evolve.</em></h2>
+          <p className="hero-description">VORTEX FOREX INTELLIGENCE · QUALIFIED SIGNALS · CONTINUOUS LEARNING</p>
           <div className="hero-actions"><a className="primary-link" href="#signals">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="#operations">System health</a></div>
           <p className="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p>
         </div>
         <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
       </section>
 
-      <section className="signal-admin-access" aria-label="Signal scan authorization">
-        <label htmlFor="signal-github-token">GitHub Actions authorization</label>
-        <input id="signal-github-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Fine-grained GitHub token (not saved)" />
-        <p className="feature-note">Create a fine-grained token restricted to this repository with Actions: write permission. It is sent directly to api.github.com over HTTPS and is never saved in browser storage or bundled into the site. Anyone who can run scripts in this page could access a token while entered, so use a narrowly scoped, short-lived token.</p>
+      <section className="signal-admin-access" aria-label="Signal scan trigger status">
+        <strong>Scan trigger: {scanTriggerUrl && turnstileSiteKey ? 'configured' : 'setup required'}</strong>
+        {turnstileSiteKey ? <Turnstile siteKey={turnstileSiteKey} onToken={setTurnstileToken} /> : <p className="feature-note">Human verification is not configured.</p>}
+        <p className="feature-note">Scan requests use a protected server-side trigger. No GitHub credential is stored in this public dashboard. {scanTriggerUrl ? 'Use VIP Start or Session Start to queue a scan.' : 'Complete the one-time deployment steps in docs/SCAN-TRIGGER-SETUP.md.'}</p>
         <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
 
@@ -1087,6 +1083,36 @@ function Dashboard() {
       </footer>
     </main>
   );
+}
+
+
+function Turnstile({ siteKey, onToken }: { siteKey: string; onToken: (token: string) => void }) {
+  const host = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    let widgetId: string | undefined;
+    let active = true;
+    const render = () => {
+      const api = (window as unknown as { turnstile?: { render: (el: HTMLElement, opts: { sitekey: string; callback: (token: string) => void; 'expired-callback': () => void; 'error-callback': () => void }) => string; remove: (id: string) => void } }).turnstile;
+      if (!active || !host.current || !api || widgetId) return;
+      widgetId = api.render(host.current, { sitekey: siteKey, callback: onToken, 'expired-callback': () => onToken(''), 'error-callback': () => onToken('') });
+    };
+    let script = document.querySelector<HTMLScriptElement>('script[data-vortex-turnstile]');
+    if (!script) {
+      script = document.createElement('script');
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.async = true; script.defer = true; script.dataset.vortexTurnstile = 'true';
+      document.head.appendChild(script);
+    }
+    script.addEventListener('load', render);
+    render();
+    return () => {
+      active = false;
+      script?.removeEventListener('load', render);
+      const api = (window as unknown as { turnstile?: { remove: (id: string) => void } }).turnstile;
+      if (widgetId && api) api.remove(widgetId);
+    };
+  }, [siteKey, onToken]);
+  return <div className="turnstile-container" ref={host} aria-label="Human verification" />;
 }
 
 const container = document.getElementById('root');

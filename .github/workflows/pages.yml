@@ -16,6 +16,8 @@ on:
     branches: [main]
     paths:
       - apps/web/**
+      - supabase/functions/scan-trigger/**
+      - docs/SCAN-TRIGGER-SETUP.md
       - packages/core/**
       - package.json
       - package-lock.json
@@ -47,6 +49,8 @@ jobs:
       VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
       VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
       VITE_DATA_SOURCE: ${{ vars.VITE_DATA_SOURCE }}
+      VITE_SCAN_TRIGGER_URL: ${{ vars.VITE_SCAN_TRIGGER_URL }}
+      VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
       VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
