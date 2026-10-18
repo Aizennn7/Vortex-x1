@@ -342,3 +342,49 @@ code { color: #9be2e8; }
     animation: none !important;
   }
 }
+
+/* Searchable NEXUS-style signal registry controls */
+.signal-registry-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px;
+  margin: 0 0 14px;
+  border: 1px solid rgba(137, 205, 220, .18);
+  border-radius: 14px;
+  background: rgba(5, 18, 27, .48);
+}
+.signal-registry-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+  flex: 1 1 190px;
+  color: var(--muted);
+  font-size: .82rem;
+}
+.signal-registry-controls input,
+.signal-registry-controls select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 11px;
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 9px;
+  background: rgba(3, 13, 21, .9);
+  font: inherit;
+}
+.signal-registry-controls input::placeholder { color: #78939e; }
+.signal-registry-controls button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+.signal-registry-controls button:disabled { cursor: not-allowed; opacity: .45; }
+.signal-registry-controls > span { padding-bottom: 12px; font-size: .82rem; }
+@media (max-width: 620px) {
+  .signal-registry-controls { align-items: stretch; }
+  .signal-registry-controls label { flex-basis: 100%; }
+  .signal-registry-controls button { width: 100%; }
+  .signal-registry-controls > span { padding-bottom: 0; }
+}
