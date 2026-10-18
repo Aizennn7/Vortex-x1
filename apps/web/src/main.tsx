@@ -408,7 +408,7 @@ function Dashboard() {
       : Promise.resolve({ ok: false, status: 0, data: null, error: 'This data source does not expose candle history.', kind: 'error' }),
     60_000,
   );
-  useEffect(() => { void candleHistory.refresh(); }, [selectedCandlePair]);
+  useEffect(() => { void candleHistory.refresh(); }, [selectedCandlePair, candleHistory.refresh]);
 
   const refreshAll = useCallback(() => {
     void health.refresh();
