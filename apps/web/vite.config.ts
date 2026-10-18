@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'node:path';
 
 /**
  * Dashboard build.
@@ -71,6 +72,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [react()],
     build: {
+      rollupOptions: { input: { index: resolve(process.cwd(), 'index.html'), signals: resolve(process.cwd(), 'signals.html'), markets: resolve(process.cwd(), 'markets.html'), learning: resolve(process.cwd(), 'learning.html'), secrets: resolve(process.cwd(), 'secrets.html'), instructions: resolve(process.cwd(), 'instructions.html'), delivery: resolve(process.cwd(), 'delivery.html'), performance: resolve(process.cwd(), 'performance.html'), system: resolve(process.cwd(), 'system.html'), settings: resolve(process.cwd(), 'settings.html') } },
       outDir: 'dist',
       sourcemap: false,
       target: 'es2022',

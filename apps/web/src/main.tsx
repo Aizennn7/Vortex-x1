@@ -516,7 +516,7 @@ function Dashboard() {
       <aside className="nexus-sidebar" aria-label="VORTEX navigation">
         <a className="nexus-brand" href="#overview"><span className="nexus-brand-mark">V</span><span><strong>VORTEX</strong><small>Predict · Learn · Grow</small></span></a>
         <nav className="workspace-nav" aria-label="Workspace sections">
-          <a href="#overview">⌂ <span>Overview</span></a><a href="#signals">⌁ <span>Signals</span></a><a href="#markets">▥ <span>Markets</span></a><a href="#learning">♧ <span>AI Learning</span></a><a href="#data-cloud">☁ <span>Data & Cloud</span></a><a href="#delivery">➤ <span>Telegram</span></a><a href="#performance">⌁ <span>Performance</span></a><a href="#operations">⚙ <span>System Health</span></a><a href="#settings">⚙ <span>Settings</span></a>
+          <a href="./index.html">⌂ <span>Overview</span></a><a href="./signals.html">⌁ <span>Signals</span></a><a href="./markets.html">▥ <span>Markets</span></a><a href="./learning.html">♧ <span>AI Learning</span></a><a href="./secrets.html">☁ <span>Secrets & Data</span></a><a href="./instructions.html">▤ <span>Instructions</span></a><a href="./delivery.html">➤ <span>Delivery</span></a><a href="./performance.html">⌁ <span>Performance</span></a><a href="./system.html">⚙ <span>System Health</span></a><a href="./settings.html">⚙ <span>Settings</span></a>
         </nav>
         <p className="nexus-sidebar-quote">“The future belongs to those who never stop exploring.”</p>
       </aside>
@@ -527,7 +527,7 @@ function Dashboard() {
           <p className="eyebrow"><span className="status-orb" /> VORTEX SIGNAL INTELLIGENCE</p>
           <h2 id="hero-title">Predict the market.<br /><em>Learn. Adapt. Evolve.</em></h2>
           <p className="hero-description">VORTEX FOREX INTELLIGENCE · QUALIFIED SIGNALS · CONTINUOUS LEARNING</p>
-          <div className="hero-actions"><a className="primary-link" href="#signals">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="#operations">System health</a></div>
+          <div className="hero-actions"><a className="primary-link" href="./signals.html">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="./system.html">System health</a></div>
           <p className="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p>
         </div>
         <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
