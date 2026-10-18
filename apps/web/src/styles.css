@@ -534,3 +534,38 @@ td,th{padding:10px 9px;border-bottom:1px solid #9fc6e51a;white-space:nowrap}
 .settings-workspace .quiet-link{display:inline-block;margin-top:8px;color:#a9dcff}
 #data-cloud,#learning,#performance,#settings{scroll-margin-top:18px}
 @media(max-width:760px){.settings-grid{grid-template-columns:1fr}.settings-workspace{padding:12px}}
+
+/* Overview is a single-screen landing page; operational work lives in dedicated pages. */
+.nexus-workspace > .signal-admin-access,.nexus-workspace > .feature-grid,.nexus-workspace > .section-heading,.nexus-workspace > .grid,.nexus-workspace > section:not(.cosmic-hero),.nexus-workspace > #signals,.nexus-workspace > .settings-workspace,.nexus-workspace > .section-anchor {display:none!important}
+.nexus-shell {grid-template-columns:225px minmax(0,1fr)!important;min-height:calc(100vh - 145px)}
+.nexus-workspace {min-width:0}
+.nexus-sidebar {position:sticky;top:1rem;align-self:start;max-height:calc(100vh - 2rem);overflow:auto}
+.workspace-nav {flex-direction:column;align-items:stretch}
+.workspace-nav a {display:flex;gap:.7rem;align-items:center;border-radius:10px;padding:.7rem .8rem}
+.nexus-workspace > .cosmic-hero {min-height:min(610px,calc(100vh - 190px));margin:0}
+.page-layout {width:min(1380px,100%);margin:0 auto;padding:1.2rem clamp(1rem,3vw,2.75rem) 2rem}
+.page-shell {display:grid;grid-template-columns:225px minmax(0,1fr);gap:1.25rem;align-items:start}
+.page-sidebar {position:sticky;top:1rem;padding:1rem;border:1px solid var(--panel-edge);border-radius:18px;background:rgba(7,20,36,.88)}
+.page-sidebar .nexus-brand {display:flex;align-items:center;gap:.75rem;color:var(--text);text-decoration:none;margin-bottom:1rem}
+.page-sidebar .nexus-brand-mark {display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:linear-gradient(145deg,#54c8ff,#7569db);color:#07101c;font-weight:900}
+.page-sidebar .nexus-brand small {display:block;color:var(--muted);margin-top:.2rem}
+.page-sidebar nav {display:grid;gap:.25rem}
+.page-sidebar nav a {color:#c7d9ee;text-decoration:none;padding:.7rem .75rem;border-radius:10px;font-size:.86rem}
+.page-sidebar nav a:hover,.page-sidebar nav a[aria-current="page"] {background:rgba(87,201,255,.12);color:#fff;border:1px solid var(--panel-edge)}
+.page-content {min-width:0}
+.page-heading {margin:.3rem 0 1.2rem}
+.page-heading h1 {font-size:clamp(1.5rem,3vw,2.2rem);letter-spacing:-.035em;color:var(--text)}
+.page-heading p {color:var(--muted);line-height:1.6}
+.workspace-card {padding:1.2rem;margin:0 0 1rem;border:1px solid var(--panel-edge);border-radius:18px;background:linear-gradient(150deg,rgba(26,35,53,.92),rgba(8,18,31,.92))}
+.workspace-card h2 {margin-bottom:.85rem}
+.workspace-card label {display:grid;gap:.4rem;color:var(--muted);font-size:.82rem;margin:.65rem 0}
+.workspace-card input,.workspace-card select,.workspace-card textarea {width:100%;color:var(--text);background:#071321;border:1px solid var(--panel-edge);border-radius:9px;padding:.75rem;font:inherit}
+.workspace-card .row-fields {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.8rem}
+.workspace-card button {margin:.45rem .4rem .1rem 0}
+.workspace-card table {min-width:760px}
+.page-status {padding:.75rem .9rem;border:1px solid var(--panel-edge);border-radius:10px;color:var(--muted);margin:.8rem 0;overflow-wrap:anywhere}
+.page-status.error {color:var(--bad);border-color:var(--bad)}
+.page-status.success {color:var(--good);border-color:var(--good)}
+.page-note {color:var(--muted);font-size:.82rem;line-height:1.65}
+.instruction-list {display:grid;gap:.8rem;padding-left:1.25rem;line-height:1.7}
+@media(max-width:850px){.nexus-shell,.page-shell{grid-template-columns:1fr!important}.nexus-sidebar,.page-sidebar{position:static;max-height:none}.workspace-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.nexus-workspace>.cosmic-hero{min-height:420px}.planet-art{opacity:.45;width:75vw!important;right:-8%!important}.workspace-card .row-fields{grid-template-columns:1fr}}
