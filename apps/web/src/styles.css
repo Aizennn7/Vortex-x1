@@ -454,3 +454,83 @@ button:focus-visible,a:focus-visible,code:focus-visible { outline-color:#63d7ff;
 .signal-registry-controls { border-color:rgba(84,187,255,.25); background:rgba(3,18,34,.68); }
 .market-candle-chart { border-color:rgba(84,187,255,.24); background:rgba(3,15,29,.72); }
 .chart-grid-line { stroke:rgba(91,177,255,.16); }
+
+
+/* Reference-matched NEXUS-style shell for VORTEX; operational components/data remain unchanged. */
+:root{--bg:#030b17;--panel:rgba(12,31,53,.66);--panel-edge:rgba(157,199,236,.30);--text:#edf5ff;--muted:#a8bbd0;--accent:#54cfff;--rose:#7daaff}
+body{background:radial-gradient(ellipse at 50% 0%,rgba(60,120,174,.20),transparent 45rem),linear-gradient(135deg,#020712,#07182a 55%,#020711);background-attachment:fixed}
+body::before{opacity:.22}
+main{width:min(1800px,100%);padding:1rem clamp(.6rem,1.4vw,1.4rem) 1.5rem}
+.masthead{display:none}
+.nexus-shell{display:grid;grid-template-columns:190px minmax(0,1fr) 230px;gap:14px;align-items:stretch;min-height:calc(100vh - 70px)}
+.nexus-sidebar,.nexus-creator-rail{position:sticky;top:12px;align-self:start;height:calc(100vh - 24px);min-height:650px;overflow:hidden;border:1px solid rgba(165,204,242,.35);border-radius:20px;background:linear-gradient(160deg,rgba(12,32,54,.86),rgba(3,12,27,.88));box-shadow:inset 0 1px 0 rgba(255,255,255,.13),0 16px 55px rgba(0,0,0,.22);backdrop-filter:blur(18px)}
+.nexus-sidebar{padding:18px 12px;display:flex;flex-direction:column}
+.nexus-brand{display:flex;align-items:center;gap:10px;padding:4px 2px 22px;text-decoration:none;color:var(--text)}
+.nexus-brand-mark{display:grid;place-items:center;width:39px;height:39px;border:1px solid #7abfff;border-radius:50%;font-family:Georgia,serif;font-size:25px;color:#b7e3ff;box-shadow:0 0 20px #2279bb66}
+.nexus-brand strong{display:block;font-family:Georgia,serif;font-size:17px;letter-spacing:.16em}
+.nexus-brand small{display:block;color:var(--muted);font-size:9px;margin-top:4px}
+.workspace-nav{display:flex;flex-direction:column;gap:6px;padding:0;border:0}
+.workspace-nav a{display:flex;align-items:center;gap:11px;padding:11px 10px;border:1px solid transparent;border-radius:9px;color:#c3d7eb;font-size:12px;letter-spacing:0;text-transform:none}
+.workspace-nav a:hover,.workspace-nav a:focus{background:linear-gradient(90deg,rgba(68,143,214,.34),rgba(68,143,214,.08));border-color:#6db8ff55;color:#fff}
+.workspace-nav a:first-child{background:rgba(74,140,207,.22);border-color:#8ecaff44}
+.workspace-nav a:first-letter{font-size:16px}
+.nexus-sidebar-quote{margin:auto 3px 5px;color:#9db2c9;font-size:11px;line-height:1.8;font-style:italic}
+.nexus-workspace{min-width:0}
+.cosmic-hero{min-height:194px;margin:0 0 14px;padding:26px 32px;border-radius:19px;border-color:#a6c9e45c;background:linear-gradient(100deg,rgba(6,17,32,.9),rgba(20,46,70,.48)),radial-gradient(ellipse at 78% 20%,#b6d8ef55,transparent 30%),linear-gradient(130deg,#152d46,#18283b 50%,#3d5269);box-shadow:inset 0 1px 0 #fff2,0 15px 40px #0004}
+.cosmic-hero h2{font-family:Georgia,'Times New Roman',serif;letter-spacing:.12em;font-weight:500;font-size:clamp(28px,3vw,46px)}
+.cosmic-hero h2 em{font-size:.36em;letter-spacing:.04em;font-style:normal;color:#e1edf7}
+.hero-description{font-size:12px;margin:.65rem 0;color:#d0dce8}
+.hero-footnote{margin:.6rem 0 0}
+.planet-art{width:min(30vw,250px);opacity:.7}
+.section-heading{margin:18px 0 10px}
+.grid{gap:12px}
+.card,.feature-card,.signal-admin-access{border:1px solid rgba(154,196,235,.3);border-radius:15px;background:linear-gradient(145deg,rgba(24,50,75,.74),rgba(7,22,40,.80));box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 12px 28px #0002;backdrop-filter:blur(16px)}
+.card{padding:15px}
+.card>header{border-bottom:1px solid #a4c9e51f;padding-bottom:10px;margin-bottom:12px}
+.card h2,.section-heading h2{font-size:13px;letter-spacing:.04em}
+.feature-grid{gap:12px}
+.feature-card{padding:16px}
+.stat{background:linear-gradient(145deg,rgba(37,73,103,.8),rgba(10,26,45,.85));border:1px solid #a4c9e533;border-radius:13px;padding:13px}
+.stat-value{font-size:23px}
+button{border-radius:9px}
+.table-scroll{max-width:100%;overflow:auto}
+table{width:100%;border-collapse:separate;border-spacing:0}
+th{color:#9fb9d3;font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+td,th{padding:10px 9px;border-bottom:1px solid #9fc6e51a;white-space:nowrap}
+#signals .card{border-color:#65b6ff75;box-shadow:0 0 0 1px #65b6ff12,0 15px 45px #0003}
+#signals .card>header h2{font-size:17px}
+.signal-registry-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+.signal-registry-controls label{min-width:160px}
+.signal-empty{padding:26px 12px;border:1px dashed #a7c5df3a;border-radius:12px;text-align:center}
+.nexus-creator-rail{padding:18px 14px;display:flex;flex-direction:column}
+.creator-top{display:flex;gap:10px;align-items:center}
+.creator-seal{display:grid;place-items:center;width:38px;height:38px;border:1px solid #a7c6e2;border-radius:50%;font-size:22px}
+.creator-top small{display:block;font-size:9px;color:#a9bed4}
+.creator-top strong{display:block;font-size:15px;letter-spacing:.1em;margin:3px 0}
+.creator-art{height:28%;min-height:150px;position:relative;margin:18px -14px 0;overflow:hidden;background:radial-gradient(ellipse at 50% 15%,#b6d5e54d,transparent 50%),linear-gradient(145deg,#172e48,#081426 65%,#203954)}
+.creator-art:after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(155deg,transparent 0 16px,#a9d6f10b 17px 18px)}
+.creator-planet{position:absolute;width:110px;height:110px;border-radius:50%;left:50%;top:18px;transform:translateX(-50%);background:radial-gradient(circle at 30% 25%,#8ca8c4,#304762 45%,#081222 78%);box-shadow:inset -16px -8px 25px #000b}
+.creator-silhouette{position:absolute;z-index:1;left:50%;top:55px;transform:translateX(-50%);font:100px Georgia,serif;color:#071324;text-shadow:0 0 15px #a3c8e655}
+.creator-emblem{align-self:center;display:grid;place-items:center;width:108px;height:108px;border:2px solid #b4d6ed;border-radius:50%;font:68px Georgia,serif;color:#b8e1ff;text-shadow:0 0 20px #59baff;box-shadow:0 0 26px #4da8ef3b;margin-top:8px}
+.nexus-creator-rail h2{text-align:center;font:26px Georgia,serif;letter-spacing:.22em;margin:12px 0 3px}
+.creator-tagline{text-align:center;font-size:9px;letter-spacing:.12em;color:#c0d4e8;margin:0}
+.creator-divider{height:1px;background:#b4d5ed30;margin:20px 0}
+.creator-bio{font-size:12px;color:#aec2d6;line-height:1.8}
+.creator-signoff{margin:auto 0 10px;font:italic 22px Georgia,serif;color:#a6cdec;transform:rotate(-7deg)}
+.nexus-brand-strip{display:flex;align-items:center;gap:14px;min-height:48px;margin-top:12px;padding:10px 20px;border:1px solid #a4c9e52b;border-radius:14px;background:#071629bd;color:#a9c3da;font-size:11px}
+.nexus-brand-strip strong{font:19px Georgia,serif;letter-spacing:.15em;color:#e7f4ff;margin-right:14px}
+.nexus-brand-strip small{margin-left:auto;font-style:italic;font-family:Georgia,serif;font-size:14px}
+.brand-orbit{font-size:23px;color:#a8d9ff}
+#signals,#operations,#delivery,#markets,#performance,#learning,#vip,#sessions{scroll-margin-top:15px}
+@media(max-width:1250px){.nexus-shell{grid-template-columns:165px minmax(0,1fr)}.nexus-creator-rail{display:none}.nexus-sidebar{height:calc(100vh - 24px)}}
+@media(max-width:760px){main{padding:.5rem}.nexus-shell{display:block;min-height:0}.nexus-sidebar{position:relative;top:auto;height:auto;min-height:0;padding:10px;margin-bottom:10px}.nexus-brand{padding-bottom:10px}.workspace-nav{flex-direction:row;overflow-x:auto;gap:4px}.workspace-nav a{flex:0 0 auto;padding:9px;font-size:11px}.workspace-nav a span{white-space:nowrap}.nexus-sidebar-quote{display:none}.cosmic-hero{min-height:190px;padding:20px}.planet-art{right:-14%;width:52vw;opacity:.38}.feature-grid{grid-template-columns:1fr}.nexus-brand-strip{flex-wrap:wrap}.nexus-brand-strip small{margin-left:0}.signal-registry-controls label{min-width:100%}}
+
+
+/* Functional workspace destinations */
+.section-anchor{display:block;position:relative;top:-14px;scroll-margin-top:18px}
+.settings-workspace{margin:22px 0 18px;padding:18px;border:1px solid rgba(154,196,235,.24);border-radius:16px;background:rgba(5,17,32,.45);scroll-margin-top:18px}
+.settings-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.settings-workspace .facts dd{overflow-wrap:anywhere}
+.settings-workspace .quiet-link{display:inline-block;margin-top:8px;color:#a9dcff}
+#data-cloud,#learning,#performance,#settings{scroll-margin-top:18px}
+@media(max-width:760px){.settings-grid{grid-template-columns:1fr}.settings-workspace{padding:12px}}
