@@ -30,6 +30,9 @@ jobs:
       DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
       VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
       TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      TWELVEDATA_API_KEY_2: ${{ secrets.TWELVEDATA_API_KEY_2 }}
+      TWELVEDATA_API_KEY_3: ${{ secrets.TWELVEDATA_API_KEY_3 }}
+      TWELVEDATA_API_KEY_4: ${{ secrets.TWELVEDATA_API_KEY_4 }}
       VITE_SCAN_TRIGGER_URL: ${{ vars.VITE_SCAN_TRIGGER_URL }}
       VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
     steps:
@@ -58,7 +61,7 @@ jobs:
             echo "OK: database connection secret is present."
           fi
           check_value VORTEX_SECRET_KEY "$VORTEX_SECRET_KEY"
-          if [ -n "$TWELVEDATA_API_KEY" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_2 }}" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_3 }}" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_4 }}" ]; then
+          if [ -n "$TWELVEDATA_API_KEY" ] || [ -n "$TWELVEDATA_API_KEY_2" ] || [ -n "$TWELVEDATA_API_KEY_3" ] || [ -n "$TWELVEDATA_API_KEY_4" ]; then
             echo "OK: at least one Twelve Data key is configured."
           else
             echo "::error::Configure at least one of TWELVEDATA_API_KEY through TWELVEDATA_API_KEY_4 in GitHub Actions secrets."
