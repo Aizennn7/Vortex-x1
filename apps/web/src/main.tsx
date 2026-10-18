@@ -444,7 +444,7 @@ function Dashboard() {
       </div>
 
       <nav className="workspace-nav" aria-label="Workspace sections">
-        <a href="#overview">Overview</a><a href="#vip">VIP</a><a href="#sessions">Session list</a><a href="#signals">Signals</a><a href="#operations">Operations</a>
+        <a href="#overview">Overview</a><a href="#vip">VIP</a><a href="#sessions">Session list</a><a href="#signals">Signals</a><a href="#delivery">Delivery</a><a href="#operations">Operations</a>
       </nav>
 
       <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
@@ -800,21 +800,6 @@ function Dashboard() {
           )}
         </Card>
 
-        <Card title="Delivery" status={telegram?.configuration.status}>
-          {telegram ? (
-            <>
-              <div className="stats">
-                <Stat label="sent" value={String(telegram.sent)} />
-                <Stat label="failed" value={String(telegram.failed)} />
-                <Stat label="unconfirmed" value={String(telegram.unconfirmed)} hint="response lost — not retried" />
-              </div>
-              <p className="muted">{telegram.configuration.detail}</p>
-            </>
-          ) : (
-            <p className="muted">Delivery state unavailable.</p>
-          )}
-        </Card>
-
         <Card title="Performance by pair & strategy" status={performanceValue ? 'CONNECTED' : undefined}>
           {performance.result.state === 'loading' ? <Loading what="performance breakdowns" /> : null}
           {performance.result.state === 'error' ? (
@@ -867,12 +852,13 @@ function Dashboard() {
         </Card>
       </div>
 
-      <div id="signals">
-      <section className="signal-tools" aria-label="Signal actions and output formatting">
+      <section id="delivery" aria-labelledby="delivery-title">
+      <div className="section-heading"><div><p className="eyebrow">SHARE & NOTIFY</p><h2 id="delivery-title">Delivery <em>centre</em></h2></div><span className="section-caption">Built-in sharing and Telegram status</span></div>
+      <section className="signal-tools" aria-label="Built-in signal delivery and output formatting">
         <div className="signal-tools-copy">
-          <p className="eyebrow">SIGNAL DESK</p>
+          <p className="eyebrow">BUILT-IN DELIVERY</p>
           <h2>Signals, ready to share.</h2>
-          <p className="muted">Refresh published results, choose an output style, and copy the newest available signal.</p>
+          <p className="muted">Choose an output style, copy the newest published signal, or refresh the published list. Refreshing does not start a scan.</p>
         </div>
         <div className="signal-controls">
           <label className="format-control">
@@ -901,6 +887,25 @@ function Dashboard() {
         )}
         <p className="muted signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
+      <div className="grid delivery-status-grid">
+        <Card title="Telegram delivery" status={telegram?.configuration.status}>
+          {telegram ? (
+            <>
+              <div className="stats">
+                <Stat label="sent" value={String(telegram.sent)} />
+                <Stat label="failed" value={String(telegram.failed)} />
+                <Stat label="unconfirmed" value={String(telegram.unconfirmed)} hint="response lost — not retried" />
+              </div>
+              <p className="muted">{telegram.configuration.detail}</p>
+            </>
+          ) : (
+            <p className="muted">Telegram delivery state unavailable.</p>
+          )}
+        </Card>
+      </div>
+      </section>
+
+      <div id="signals">
       <Card title="Recent signals">
         {signals.result.state === 'loading' ? <Loading what="recent signals" /> : null}
         {signals.result.state === 'error' ? <Failure message={signals.result.message} kind={signals.result.kind} /> : null}
@@ -951,7 +956,6 @@ function Dashboard() {
           expectation. Where a model is active its calibrated probability is stored with the signal.
         </p>
       </Card>
-
       </div>
 
       <footer className="muted">
