@@ -36,13 +36,73 @@ async function secretsPage() {
  async function loadKeys(){const out=document.getElementById('key-list');out.innerHTML=status('Loading key inventory…');try{const d=await fetch(apiBase()+'/admin/keys',{headers:{Authorization:'Bearer '+token()}});const j=await d.json();if(!d.ok)throw new Error(j.message||'HTTP '+d.status);out.innerHTML=(j.keys||[]).length?'<div class="table-scroll"><table><thead><tr><th>Label</th><th>Masked key</th><th>Status</th><th>Enabled</th><th>Last verified</th></tr></thead><tbody>'+(j.keys||[]).map(k=>'<tr><td>'+esc(k.label)+'</td><td>'+esc(k.maskedKey||k.masked_key||'••••')+'</td><td>'+esc(k.status)+'</td><td>'+esc(k.enabled)+'</td><td>'+utc(k.lastVerifiedAt||k.last_verified_at)+'</td></tr>').join('')+'</tbody></table></div>':status('No provider keys configured.');}catch(e){out.innerHTML=status('Could not load inventory: '+e.message,'error');}}
  document.getElementById('load-keys').onclick=loadKeys;
 }
+async function marketsPage(){
+ layout('Markets','Live market-data health and the newest persisted candles. Provider, freshness and missing data are reported honestly.',`
+  <div class="feature-grid">
+   <article class="feature-card"><p class="eyebrow">FEED STATUS</p><h2 id="market-feed-status">Checking…</h2><p id="market-feed-detail" class="feature-lede">Reading saved market-data quality.</p></article>
+   <article class="feature-card"><p class="eyebrow">PROVIDER CAPACITY</p><h2 id="market-budget">—</h2><p id="market-budget-detail" class="feature-lede">Checking configured provider keys.</p></article>
+   <article class="feature-card"><p class="eyebrow">MARKET SESSION</p><h2 id="market-session">—</h2><p id="market-session-detail" class="feature-lede">Session status comes from the data source.</p></article>
+  </div>
+  ${card('Pair data quality',`<div id="market-quality-status">${status('Loading persisted market-data quality…')}</div><div class="table-scroll"><table><thead><tr><th>Pair</th><th>Feed status</th><th>Age</th><th>Last candle (UTC)</th><th>Details</th></tr></thead><tbody id="market-quality-body"><tr><td colspan="5">Loading…</td></tr></tbody></table></div>`)}
+  ${card('Latest candles',`<div class="row-fields"><label>Currency pair<select id="market-pair"><option value="">Select a pair after quality loads</option></select></label><label>Timeframe<input value="M1 · closed candles only" readonly></label></div><div id="market-candle-status">${status('Waiting for pair selection…')}</div><div class="table-scroll"><table><thead><tr><th>Open time (UTC)</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>Source</th></tr></thead><tbody id="market-candle-body"><tr><td colspan="7">No candle request made yet.</td></tr></tbody></table></div><p class="page-note">Only stored closed candles are displayed. If candle history is unavailable for the selected data-source mode, this page says so instead of creating sample prices.</p><button id="markets-refresh" type="button">Refresh market data</button>`)}
+ `);
+ const qualityStatus=document.getElementById('market-quality-status');
+ const ageLabel=(n)=>n==null?'—':n<60?Math.round(n)+'s':n<3600?Math.round(n/60)+'m':Math.round(n/3600)+'h';
+ async function loadCandles(){
+  const pair=document.getElementById('market-pair').value;
+  const body=document.getElementById('market-candle-body');
+  const out=document.getElementById('market-candle-status');
+  if(!pair){out.innerHTML=status('Select a pair to inspect candles.');return;}
+  if(typeof relay.candles!=='function'){out.innerHTML=status('Candle history is not available in this configured source mode. Connect the relay or Supabase public_candles view to enable it.','error');body.innerHTML='<tr><td colspan="7">No candle-history endpoint available.</td></tr>';return;}
+  out.innerHTML=status('Loading stored closed candles for '+pair+'…');
+  try{
+   const res=await relay.candles(pair,30);
+   if(!res.ok||!res.data)throw new Error(res.error||'Candle query failed');
+   const rows=res.data.candles||[];
+   out.innerHTML=status(rows.length+' stored closed M1 candles · '+(rows[0]?.provider||'source not reported')+'.','success');
+   body.innerHTML=rows.length?rows.slice().reverse().map(c=>'<tr><td>'+utc(c.openTime)+'</td><td>'+esc(c.open)+'</td><td>'+esc(c.high)+'</td><td>'+esc(c.low)+'</td><td><strong>'+esc(c.close)+'</strong></td><td>'+esc(c.volume??'—')+'</td><td>'+esc(c.provider)+(c.provider==='simulated'?' · SYNTHETIC':'')+'</td></tr>').join(''):'<tr><td colspan="7">No stored final candles for this pair. Check the worker, provider key, ingestion job and database migrations.</td></tr>';
+  }catch(e){out.innerHTML=status('Candle history unavailable: '+e.message,'error');body.innerHTML='<tr><td colspan="7">No fabricated prices shown.</td></tr>';}
+ }
+ async function load(){
+  qualityStatus.innerHTML=status('Refreshing market-data summary…');
+  try{
+   const res=await relay.summary();
+   if(!res.ok||!res.data)throw new Error(res.error||'Market summary could not be read');
+   const d=res.data, rows=d.marketData||[];
+   const fresh=rows.filter(r=>String(r.status||'').toUpperCase()==='CONNECTED'&&!r.stale).length;
+   const disconnected=rows.filter(r=>String(r.status||'').toUpperCase()==='DISCONNECTED'||r.stale).length;
+   document.getElementById('market-feed-status').textContent=rows.length?(disconnected?'DEGRADED':'CONNECTED'):'NO DATA';
+   document.getElementById('market-feed-detail').textContent=rows.length?fresh+' fresh pair(s), '+disconnected+' stale/disconnected out of '+rows.length+'.':'No market-data quality rows have been recorded yet.';
+   const b=d.providerBudget;
+   document.getElementById('market-budget').textContent=b?b.usableKeys+' usable key(s)':'NOT VERIFIED';
+   document.getElementById('market-budget-detail').textContent=b?b.dayUsed+' / '+b.dayCapacity+' daily credits used. '+(b.warnings||[]).join(' '):'Provider budget is unavailable from this source.';
+   document.getElementById('market-session').textContent=d.marketOpen===true?'OPEN':d.marketOpen===false?'CLOSED':'UNKNOWN';
+   document.getElementById('market-session-detail').textContent=d.generatedAt?'Summary checked '+utc(d.generatedAt)+'.':'Market session timestamp not supplied.';
+   qualityStatus.innerHTML=status(rows.length+' persisted pair quality record(s).','success');
+   document.getElementById('market-quality-body').innerHTML=rows.length?rows.map(r=>'<tr><td><strong>'+esc(r.pair)+'</strong></td><td>'+esc(r.status||'NOT VERIFIED')+'</td><td>'+ageLabel(r.ageSeconds)+'</td><td>'+utc(r.lastCandleAt)+'</td><td>'+esc(r.detail||'—')+'</td></tr>').join(''):'<tr><td colspan="5">No quality records yet. Confirm database migrations, provider API key and a successful ingestion run.</td></tr>';
+   const select=document.getElementById('market-pair'), previous=select.value, pairs=[...new Set(rows.map(r=>r.pair).filter(Boolean))];
+   select.innerHTML=pairs.length?pairs.map(p=>'<option value="'+esc(p)+'">'+esc(p)+'</option>').join(''):'<option value="">No configured pairs</option>';
+   if(pairs.includes(previous))select.value=previous;
+   if(pairs.length)await loadCandles();else{document.getElementById('market-candle-status').innerHTML=status('No pairs available to query.','error');}
+  }catch(e){
+   qualityStatus.innerHTML=status('Market data unavailable: '+e.message,'error');
+   document.getElementById('market-feed-status').textContent='UNAVAILABLE';
+   document.getElementById('market-feed-detail').textContent='Check data-source URL, migrations and backend availability.';
+   document.getElementById('market-quality-body').innerHTML='<tr><td colspan="5">No data was fabricated.</td></tr>';
+   document.getElementById('market-candle-status').innerHTML=status('Connect the configured data source before candle history can load.','error');
+  }
+ }
+ document.getElementById('market-pair').addEventListener('change',()=>void loadCandles());
+ document.getElementById('markets-refresh').addEventListener('click',()=>void load());
+ await load();
+}
 async function overviewPage(){layout('Overview','Your VORTEX command centre. Each workspace has its own page; no long single-page dashboard.',`<section class="cosmic-hero"><div class="hero-copy"><p class="eyebrow">VORTEX SIGNAL INTELLIGENCE</p><h2>Predict the market.<br><em>Learn. Adapt. Evolve.</em></h2><p class="hero-description">Signals, system health, secure data configuration, and operating instructions — organized into separate workspaces.</p><div class="hero-actions"><a class="primary-link" href="./signals.html">Open Signals ↗</a><a class="quiet-link" href="./instructions.html">Instructions</a></div><p class="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p></div><div class="planet-art" aria-hidden="true"><div class="planet-ring"></div><div class="planet"></div><span class="orbit-dot"></span></div></section><div class="feature-grid"><article class="feature-card"><h2>Signals</h2><p class="feature-lede">Pair, direction, open time, timeframe, entry, expiry, status and result in a dedicated registry.</p><a class="primary-link" href="./signals.html">View signals ↗</a></article><article class="feature-card"><h2>Secrets & Data</h2><p class="feature-lede">Secure provider-key entry connected to the authenticated worker API.</p><a class="primary-link" href="./secrets.html">Manage keys ↗</a></article><article class="feature-card"><h2>Instructions</h2><p class="feature-lede">Clear setup, operating and troubleshooting steps.</p><a class="primary-link" href="./instructions.html">Read instructions ↗</a></article></div>`);}
 async function genericPage(title,desc,path,headers){layout(title,desc,card(title,`<div id="generic-status">${status('Connecting…')}</div><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+esc(h)+'</th>').join('')}</tr></thead><tbody id="generic-body"></tbody></table></div><button id="generic-refresh">Refresh</button>`));const load=async()=>{try{const d=await api(path);const key=Object.keys(d).find(k=>Array.isArray(d[k]));const rows=key?d[key]:Array.isArray(d)?d:[];document.getElementById('generic-status').innerHTML=status(rows.length+' records read from API.','success');document.getElementById('generic-body').innerHTML=rows.length?rows.map(r=>'<tr>'+headers.map(h=>'<td>'+esc(r[h]??r[h.replace(/ /g,'')]??'—')+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+headers.length+'">No records returned. This is not filled with demo data.</td></tr>';}catch(e){document.getElementById('generic-status').innerHTML=status('Data unavailable: '+e.message,'error');document.getElementById('generic-body').innerHTML='<tr><td colspan="'+headers.length+'">No placeholder data shown.</td></tr>';}};document.getElementById('generic-refresh').onclick=load;await load();}
 function instructionsPage(){layout('Instructions','A dedicated operating guide for safe configuration and reliable signal review.',card('1 · Configure the private worker',`<ol class="instruction-list"><li>Deploy the VORTEX worker/relay on a private server or trusted host; GitHub Pages is a public static site.</li><li>Configure <code>DATABASE_URL</code> using the Supabase session pooler connection string.</li><li>Set <code>VORTEX_SECRET_KEY</code> (32-byte encryption key), <code>VORTEX_ADMIN_TOKEN</code>, and the provider credential in GitHub Actions / worker environment secrets.</li><li>Apply all migrations in <code>supabase/migrations</code>. The provider key table and public read-only views must exist.</li><li>Set the dashboard relay URL to the worker endpoint. Do not place privileged keys in <code>VITE_*</code> variables.</li></ol>`)+card('2 · Save a provider key',`<ol class="instruction-list"><li>Open Secrets & Data.</li><li>Enter the private worker API URL and its admin bearer token.</li><li>Enter a label and provider API key; optionally select verification.</li><li>Save. The worker encrypts the key before inserting it into the database and returns only a masked representation.</li><li>If you see configuration required, configure <code>VORTEX_SECRET_KEY</code> on the server first.</li></ol><a class="primary-link" href="./secrets.html">Open Secrets & Data ↗</a>`)+card('3 · Read and operate signals',`<ol class="instruction-list"><li>Open Signals to view persisted records. An empty table means no qualifying signal has been published; no sample signal is fabricated.</li><li>Review pair, direction, scheduled open time (UTC), status and outcome. Timeframe, entry price or expiry show only if the engine API returns them.</li><li>Use the repository’s GitHub Actions workflow to request a scan. A workflow run is a one-shot job, not a persistent daemon.</li><li>Do not treat ranking confidence as win probability or informational signals as financial advice.</li></ol><a class="primary-link" href="./signals.html">Open Signals ↗</a>`)+card('4 · Troubleshooting',`<ul class="instruction-list"><li><strong>401/403:</strong> check the admin bearer token and permissions.</li><li><strong>503 encryption configuration:</strong> set <code>VORTEX_SECRET_KEY</code> on the worker.</li><li><strong>Database table missing:</strong> apply migrations before retrying.</li><li><strong>No signals:</strong> inspect market-data freshness, provider quota, scan logs and qualification gates. Never enable synthetic signals to fill the page.</li><li><strong>Browser can’t connect:</strong> verify relay URL, HTTPS, CORS and worker availability.</li></ul>`));}
 if(page==='signals.html') void signalsPage();
 else if(page==='secrets.html') void secretsPage();
 else if(page==='instructions.html') instructionsPage();
-else if(page==='markets.html') void genericPage('Markets','Stored market-data quality and latest provider status.','/api/summary',['pair','status','ageSeconds','detail']);
+else if(page==='markets.html') void marketsPage();
 else if(page==='learning.html') void genericPage('AI Learning','Recorded learning runs and model registry data.','/api/summary',['lastJob','workerStatus','generatedAt']);
 else if(page==='delivery.html') void genericPage('Delivery','Delivery configuration and current relay status.','/admin/status',['status','service','database']);
 else if(page==='performance.html') void genericPage('Performance','Measured outcomes only; unresolved signals are not counted as wins.','/api/performance',['key','settled','wins','losses','accuracy']);
