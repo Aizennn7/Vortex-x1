@@ -1,6 +1,6 @@
 # Permanent VORTEX scan trigger
 
-The public dashboard never receives a GitHub credential. The Supabase Edge Function verifies Cloudflare Turnstile and then dispatches the existing `vortex-jobs.yml` **cycle** workflow. VIP and Session currently select separate UI controls but use the same engine cycle; no separate strategies or entitlement system are implied.
+The public dashboard never receives a GitHub credential. The Supabase Edge Function verifies Cloudflare Turnstile and then dispatches the existing `vortex-jobs.yml` **all** workflow. VIP and Session currently select separate UI controls but each triggers the full pipeline: ingest fresh candles, activate and settle due paper signals, evaluate/publish qualifying signals, run learning, and maintenance; no separate strategies or entitlement system are implied.
 
 ## One-time configuration
 
