@@ -761,6 +761,7 @@ function Dashboard() {
           ) : null}
         </Card></div>
 
+        <span id="data-cloud" className="section-anchor" aria-hidden="true" />
         <Card title="Provider budget" status={budget ? (budget.dayRemainingPercent < 10 ? 'DEGRADED' : 'CONNECTED') : undefined}>
           {budget ? (
             <>
@@ -785,6 +786,7 @@ function Dashboard() {
           )}
         </Card>
 
+        <span id="performance" className="section-anchor" aria-hidden="true" />
         <Card title="Signal accuracy">
           {signalsValue ? (
             <>
@@ -828,6 +830,7 @@ function Dashboard() {
           )}
         </Card>
 
+        <span id="learning" className="section-anchor" aria-hidden="true" />
         <Card
           title="Model & learning"
           status={model ? (model.champion ? 'CONNECTED' : model.candidateCount > 0 ? 'DEGRADED' : 'NOT VERIFIED') : undefined}
@@ -1083,6 +1086,29 @@ function Dashboard() {
         </p>
       </Card>
       </div>
+
+      <section id="settings" className="settings-workspace" aria-labelledby="settings-title">
+        <div className="section-heading"><div><p className="eyebrow">WORKSPACE CONFIGURATION</p><h2 id="settings-title">Settings <em>& connectivity</em></h2></div><span className="section-caption">Read-only configuration</span></div>
+        <div className="grid settings-grid">
+          <Card title="Dashboard data source" status={sourceBadge}>
+            <dl className="facts">
+              <div><dt>selected mode</dt><dd>{DATA_SOURCE_MODE}</dd></div>
+              <div><dt>source endpoint</dt><dd>{sourceDescription}</dd></div>
+              <div><dt>last health refresh</dt><dd><Timestamp iso={health.refreshedAt ?? summary.refreshedAt} /></dd></div>
+            </dl>
+            <p className="muted">Connection variables are deployment settings. This public dashboard never exposes provider credentials.</p>
+          </Card>
+          <Card title="Protected scan trigger" status={scanTriggerUrl && turnstileSiteKey ? 'CONNECTED' : 'DEGRADED'}>
+            <dl className="facts">
+              <div><dt>trigger URL</dt><dd>{scanTriggerUrl ? 'configured' : 'not configured'}</dd></div>
+              <div><dt>human verification</dt><dd>{turnstileSiteKey ? 'site key configured' : 'site key missing'}</dd></div>
+              <div><dt>verification token</dt><dd>{turnstileToken ? 'available for this session' : 'not supplied'}</dd></div>
+            </dl>
+            <p className="muted">Configure deployment values through the repository's documented setup; never paste secrets into the dashboard.</p>
+            <a className="quiet-link" href="https://github.com/Aizennn7/Vortex-x1/blob/main/docs/SCAN-TRIGGER-SETUP.md" target="_blank" rel="noreferrer">Open setup guide ↗</a>
+          </Card>
+        </div>
+      </section>
 
       <footer className="muted">
         VORTEX SI is a research and notification system. Paper figures are simulations. Nothing here is financial advice.
