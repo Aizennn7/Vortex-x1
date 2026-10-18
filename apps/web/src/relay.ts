@@ -279,11 +279,36 @@ export interface SummaryPayload {
   note?: string;
 }
 
+export interface MarketCandle {
+  pair: string;
+  timeframe: string;
+  openTime: string;
+  closeTime: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+  provider: string;
+  isFinal: boolean;
+}
+
+export interface CandlePayload {
+  pair: string;
+  timeframe: string;
+  candles: MarketCandle[];
+  count: number;
+  finalOnly: boolean;
+  note: string;
+}
+
 export interface RelayClient {
   health: () => Promise<RelayResult<HealthPayload>>;
   summary: () => Promise<RelayResult<SummaryPayload>>;
   config: () => Promise<RelayResult<Record<string, unknown>>>;
   signals: (limit?: number) => Promise<RelayResult<{ signals: SignalRow[]; count: number }>>;
+  /** Read-only chart data. Sources without a candle history contract may omit this method. */
+  candles?: (pair: string, limit?: number) => Promise<RelayResult<CandlePayload>>;
   /**
    * Optional per-pair/strategy breakdowns. Present when the data source can
    * serve them (relay `/api/performance`, the snapshot artifact, or the two
@@ -770,6 +795,10 @@ export function createRelayClient(baseUrl = RELAY_BASE): RelayClient {
     },
     config: () => get<Record<string, unknown>>('/api/config'),
     signals: (limit = 25) => get<{ signals: SignalRow[]; count: number }>(`/api/signals?limit=${limit}`),
+    async candles(pair: string, limit = 90): Promise<RelayResult<CandlePayload>> {
+      const query = `pair=${encodeURIComponent(pair)}&timeframe=M1&limit=${Math.min(120, Math.max(1, Math.floor(limit)))}`;
+      return get<CandlePayload>(`/api/candles?${query}`);
+    },
     async performance(): Promise<RelayResult<PerformanceOverview>> {
       const res = await get<Record<string, unknown>>('/api/performance');
       if (!res.ok || !res.data) return { ...res, data: null };
@@ -1117,6 +1146,29 @@ export function createSupabasePublicClient(options: { url: string; anonKey: stri
         strategy: r.strategy,
       }));
       return { ok: true, status: 200, data: { signals, count: signals.length }, error: null, kind: 'none' };
+    },
+
+    async candles(pair: string, limit = 90): Promise<RelayResult<CandlePayload>> {
+      const safeLimit = Math.min(120, Math.max(1, Math.floor(limit)));
+      const res = await queryView<Record<string, unknown>[]>(
+        `public_candles?select=pair,timeframe,open_time,close_time,open,high,low,close,volume,provider,is_final&pair=eq.${encodeURIComponent(pair)}&timeframe=eq.M1&is_final=eq.true&order=open_time.desc&limit=${safeLimit}`,
+      );
+      if (!res.ok || !res.data) return { ...res, data: null };
+      const candles: MarketCandle[] = res.data.map((row) => ({
+        pair: String(row.pair),
+        timeframe: String(row.timeframe),
+        openTime: String(row.open_time),
+        closeTime: String(row.close_time),
+        open: finiteOrNull(row.open) ?? Number.NaN,
+        high: finiteOrNull(row.high) ?? Number.NaN,
+        low: finiteOrNull(row.low) ?? Number.NaN,
+        close: finiteOrNull(row.close) ?? Number.NaN,
+        volume: row.volume === null || row.volume === undefined ? null : finiteOrNull(row.volume),
+        provider: String(row.provider ?? 'unknown'),
+        isFinal: row.is_final === true,
+      })).filter((candle) => [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite));
+      candles.reverse();
+      return { ok: true, status: 200, data: { pair, timeframe: 'M1', candles, count: candles.length, finalOnly: true, note: 'Read from the RLS-protected public_candles view. Only stored final candles are shown; no candles are synthesized.' }, error: null, kind: 'none' };
     },
 
     async performance(): Promise<RelayResult<PerformanceOverview>> {
