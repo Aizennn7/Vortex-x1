@@ -6,13 +6,27 @@ const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
 const pages = [
   ['index.html','Overview'],['signals.html','Signals'],['markets.html','Markets'],['learning.html','AI Learning'],
   ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','Delivery'],
-  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],
+  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['operator.html','AI Operator'],
 ];
 const page = location.pathname.split('/').pop() || 'index.html';
 const current = pages.find(([file]) => file === page)?.[1] || 'Overview';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const nav = () => `<aside class="page-sidebar"><a class="nexus-brand" href="./index.html"><span class="nexus-brand-mark">V</span><span><strong>VORTEX SI</strong><small>Signal Intelligence</small></span></a><nav>${pages.map(([href,label])=>`<a href="./${href}" ${label===current?'aria-current="page"':''}>${label}</a>`).join('')}</nav></aside>`;
-const layout = (title, desc, body) => { document.title = 'VORTEX SI — '+title; root.innerHTML = `<main class="page-layout"><div class="page-shell">${nav()}<section class="page-content"><header class="page-heading"><h1>${title}</h1><p>${desc}</p></header>${body}</section></div></main>`; };
+const operatorMarkup = () => `
+  <button class="ai-operator-launch" id="ai-operator-launch" type="button" aria-controls="ai-operator-panel" aria-expanded="false"><span aria-hidden="true">✳</span> AI Operator</button>
+  <section class="ai-operator-panel" id="ai-operator-panel" aria-label="VORTEX AI Operator" hidden>
+    <header class="ai-operator-header"><div><p class="eyebrow">LOCAL MODEL BRIDGE</p><h2>VORTEX AI Operator</h2><p class="page-note">Advice and read-only diagnostics. It cannot execute commands or change production settings.</p></div><button type="button" id="ai-operator-close" aria-label="Close AI Operator">×</button></header>
+    <div class="ai-operator-config">
+      <label>OpenAI-compatible endpoint<input id="ai-operator-endpoint" type="url" inputmode="url" placeholder="http://127.0.0.1:8080/v1/chat/completions" autocomplete="url"></label>
+      <label>Model name<input id="ai-operator-model" value="Qwen3-4B-Q4" autocomplete="off"></label>
+      <p class="page-note">Endpoint must be HTTPS or loopback. Your prompt and selected read-only status context are sent to this endpoint. Do not enter secrets.</p>
+    </div>
+    <div class="ai-operator-messages" id="ai-operator-messages" role="log" aria-live="polite"><div class="ai-message ai-message-system">Connect a local OpenAI-compatible inference server, then ask about VORTEX status, signal workflows, or debugging. Model output is treated as advice, never as executable instructions.</div></div>
+    <div class="ai-operator-actions"><button type="button" id="ai-operator-inspect">Inspect VORTEX status</button><label class="ai-context-toggle"><input id="ai-operator-context" type="checkbox" checked> Include read-only status context</label></div>
+    <form class="ai-operator-compose" id="ai-operator-form"><label class="sr-only" for="ai-operator-prompt">Message the AI Operator</label><textarea id="ai-operator-prompt" rows="2" maxlength="4000" placeholder="Ask about system health, signals, workflows…" required></textarea><button type="submit" id="ai-operator-send">Send</button></form>
+    <p class="page-note" id="ai-operator-status" role="status">Local inference is not connected until you configure and test an endpoint.</p>
+  </section>`; 
+const layout = (title, desc, body) => { document.title = 'VORTEX SI — '+title; root.innerHTML = `<main class="page-layout"><div class="page-shell">${nav()}<section class="page-content"><header class="page-heading"><h1>${title}</h1><p>${desc}</p></header>${body}</section></div></main>${operatorMarkup()}`; initAiOperator(); };
 const card = (title, body) => `<section class="workspace-card"><h2>${title}</h2>${body}</section>`;
 const status = (msg, cls='') => `<div class="page-status ${cls}" role="status">${esc(msg)}</div>`;
 async function api(path, opts={}) {
@@ -22,6 +36,54 @@ async function api(path, opts={}) {
   return data;
 }
 function utc(value) { if(!value) return '—'; const d=new Date(value); return Number.isNaN(d.getTime())?esc(value):d.toISOString().replace('T',' ').replace('.000Z',' UTC').replace('Z',' UTC'); }
+
+function initAiOperator() {
+ const launch=document.getElementById('ai-operator-launch'), panel=document.getElementById('ai-operator-panel');
+ const endpoint=document.getElementById('ai-operator-endpoint'), model=document.getElementById('ai-operator-model');
+ const messages=document.getElementById('ai-operator-messages'), statusEl=document.getElementById('ai-operator-status');
+ const form=document.getElementById('ai-operator-form'), prompt=document.getElementById('ai-operator-prompt');
+ if(!launch||!panel)return;
+ try{endpoint.value=localStorage.getItem('vortex.ai.endpoint')||'';model.value=localStorage.getItem('vortex.ai.model')||'Qwen3-4B-Q4';}catch{}
+ const open=(value)=>{panel.hidden=!value;launch.setAttribute('aria-expanded',String(value));if(value)prompt.focus();};
+ launch.addEventListener('click',()=>open(panel.hidden));document.getElementById('ai-operator-close').addEventListener('click',()=>open(false));
+ endpoint.addEventListener('change',()=>{try{localStorage.setItem('vortex.ai.endpoint',endpoint.value.trim());}catch{}});
+ model.addEventListener('change',()=>{try{localStorage.setItem('vortex.ai.model',model.value.trim());}catch{}});
+ const addMessage=(role,text)=>{const node=document.createElement('div');node.className='ai-message ai-message-'+role;node.textContent=text;messages.appendChild(node);messages.scrollTop=messages.scrollHeight;return node;};
+ async function inspect(){
+  const result={checkedAt:new Date().toISOString(),dataSource:base?'configured relay':'same-origin relay'};
+  const jobs=[['health',()=>relay.health()],['summary',()=>relay.summary()],['signals',()=>relay.signals(10)]];
+  for(const [name,load] of jobs){try{const r=await load();result[name]=r?.ok&&r.data?r.data:{available:false,error:r?.error||'not available'};}catch(e){result[name]={available:false,error:String(e?.message||e)};}}
+  // Keep context small and strictly read-only. Never request or include secrets/admin inventory.
+  if(result.health?.provider)result.health={status:result.health.status,ready:result.health.ready,reasons:result.health.reasons,provider:result.health.provider,database:result.health.database,timestamp:result.health.timestamp};
+  if(result.summary?.marketData)result.summary={workerStatus:result.summary.workerStatus,marketOpen:result.summary.marketOpen,marketData:result.summary.marketData,providerBudget:result.summary.providerBudget,lastSuccessfulJob:result.summary.lastSuccessfulJob,generatedAt:result.summary.generatedAt,learning:result.summary.learning,scan:result.summary.scan};
+  if(result.signals?.signals)result.signals={count:result.signals.count??result.signals.signals.length,signals:result.signals.signals.map(s=>({pair:s.pair,decision:s.decision,status:s.status,scheduledEntryAt:s.scheduledEntryAt,outcome:s.outcome,strategy:s.strategy}))};
+  return result;
+ }
+ document.getElementById('ai-operator-inspect').addEventListener('click',async()=>{
+  const button=document.getElementById('ai-operator-inspect');button.disabled=true;statusEl.textContent='Reading permitted health, summary and recent-signal endpoints…';
+  try{const context=await inspect();addMessage('system','Read-only VORTEX snapshot:\n'+JSON.stringify(context,null,2));statusEl.textContent='Snapshot loaded. No commands were executed.';}
+  catch(e){statusEl.textContent='Inspection failed: '+String(e?.message||e);}finally{button.disabled=false;}
+ });
+ form.addEventListener('submit',async(event)=>{
+  event.preventDefault();const text=prompt.value.trim();if(!text)return;
+  const url=endpoint.value.trim(), modelName=model.value.trim();if(!url||!modelName){statusEl.textContent='Enter an inference endpoint and model name first.';return;}
+  let parsed;try{parsed=new URL(url);}catch{statusEl.textContent='Endpoint URL is invalid.';return;}
+  const loopback=['localhost','127.0.0.1','[::1]'].includes(parsed.hostname);
+  if(parsed.protocol!=='https:'&&!(parsed.protocol==='http:'&&loopback)){statusEl.textContent='For safety, use HTTPS or a loopback endpoint only. Never expose a local model port to the public internet.';return;}
+  const send=document.getElementById('ai-operator-send');send.disabled=true;prompt.value='';addMessage('user',text);statusEl.textContent='Connecting to model…';
+  try{
+   const context=document.getElementById('ai-operator-context').checked?await inspect():{contextIncluded:false};
+   const system='You are the VORTEX SI AI Operator. Help diagnose, explain and plan changes across the dashboard, signals, market-data ingestion, learning, and CI workflows. You may propose commands or code changes, but you cannot execute tools, run commands, change settings, access secrets, or claim an action happened. Use only the supplied read-only context; distinguish unknown from healthy and never invent data. For code/workflow changes, provide a reviewed plan and recommend a GitHub pull request. Market signals are informational, not financial advice. Current read-only context: '+JSON.stringify(context);
+   const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:modelName,stream:false,messages:[{role:'system',content:system},{role:'user',content:text}]})});
+   const raw=await response.text();let data;try{data=raw?JSON.parse(raw):{};}catch{data={};}
+   if(!response.ok)throw new Error(data.error?.message||data.message||('HTTP '+response.status+' — check endpoint, CORS and model name'));
+   const answer=data.choices?.[0]?.message?.content||data.message?.content||data.response;
+   if(typeof answer!=='string'||!answer.trim())throw new Error('The endpoint returned no assistant text. Confirm it supports OpenAI-compatible /v1/chat/completions responses.');
+   addMessage('assistant',answer.trim());statusEl.textContent='Reply received. This model is advisory only; no system action was executed.';
+  }catch(e){statusEl.textContent='Model request failed: '+String(e?.message||e)+'. On a hosted HTTPS site, browser CORS / mixed-content rules may block phone-local HTTP servers.';}
+  finally{send.disabled=false;prompt.focus();}
+ });
+}
 async function signalsPage() {
  layout('Signals','A dedicated signal registry. Every row comes from persisted engine data; no sample or synthetic signals are displayed.',card('Published signals',`<div id="signal-status">${status('Connecting to the configured data source…')}</div><div class="row-fields"><label>Search pair / direction / strategy<input id="signal-search" placeholder="EUR/USD, BUY…"></label><label>Outcome<select id="signal-filter"><option value="">All outcomes</option><option>WIN</option><option>LOSS</option><option>PENDING</option><option>DRAW</option></select></label></div><div class="table-scroll"><table><thead><tr><th>Pair</th><th>Direction</th><th>Open time (UTC)</th><th>Timeframe</th><th>Entry</th><th>Expiry</th><th>Status</th><th>Result</th></tr></thead><tbody id="signals-body"><tr><td colspan="8">Loading…</td></tr></tbody></table></div><p class="page-note">The database schema currently exposes scheduled entry, pair, decision, status and outcome. Timeframe, entry price and expiry are shown only when returned by the API; unavailable fields are marked —.</p><button id="signals-refresh">Refresh signals</button><button id="signals-export">Export CSV</button>`));
  let rows=[];
@@ -107,5 +169,5 @@ else if(page==='learning.html') void genericPage('AI Learning','Recorded learnin
 else if(page==='delivery.html') void genericPage('Delivery','Delivery configuration and current relay status.','/admin/status',['status','service','database']);
 else if(page==='performance.html') void genericPage('Performance','Measured outcomes only; unresolved signals are not counted as wins.','/api/performance',['key','settled','wins','losses','accuracy']);
 else if(page==='system.html') void genericPage('System Health','Health checks from the configured VORTEX worker.','/health',['service','status','version','timestamp']);
-else if(page==='settings.html') { layout('Settings','Connection state and configuration guidance.',card('Public data connection',`<p class="page-note">The dashboard reads public, secret-free views. Configure <code>VITE_RELAY_URL</code> during deployment to connect to the private worker. Privileged credentials must never be embedded in the public frontend.</p><p id="settings-status">${status('Checking health…')}</p><button id="settings-refresh">Refresh health</button>`));const load=async()=>{try{const d=await api('/health');document.getElementById('settings-status').innerHTML=status('Worker responded: '+(d.status||'reachable')+'. '+(d.note||''),'success')}catch(e){document.getElementById('settings-status').innerHTML=status('Worker health unavailable: '+e.message,'error')}};document.getElementById('settings-refresh').onclick=load;void load();}
+else if(page==='operator.html') layout('AI Operator','A root-level assistant for read-only VORTEX diagnostics and reviewed engineering plans.',card('Local model setup',`<p class="page-note">Open the AI Operator button in the lower corner from any workspace. On Android, a 4B quantized model is a sensible first test with 16 GB RAM, but sustained speed depends on the phone chipset and memory pressure.</p><ol class="instruction-list"><li>Install a trusted Android inference runtime or use Termux with a llama.cpp OpenAI-compatible server.</li><li>Download a Qwen3 4B instruct GGUF in a quantization that fits your device (Q4 is a reasonable starting point).</li><li>Run the server bound to loopback only, not 0.0.0.0, and use its chat-completions endpoint.</li><li>Set the endpoint and exact model identifier in the AI Operator panel.</li><li>Test with “Inspect VORTEX status” and then ask for an explanation. If the browser blocks requests, do not expose the model port publicly; use a trusted same-origin private backend bridge.</li></ol><p class="page-note">This initial integration is intentionally advisory/read-only. It does not execute shell commands, merge PRs, trigger workflows, edit files, or access secret-management endpoints. Those actions need separately authenticated server-side tools, explicit allowlists, audit logs, and confirmation.</p><p><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noreferrer">llama.cpp server documentation ↗</a></p>`));\nelse if(page==='settings.html') { layout('Settings','Connection state and configuration guidance.',card('Public data connection',`<p class="page-note">The dashboard reads public, secret-free views. Configure <code>VITE_RELAY_URL</code> during deployment to connect to the private worker. Privileged credentials must never be embedded in the public frontend.</p><p id="settings-status">${status('Checking health…')}</p><button id="settings-refresh">Refresh health</button>`));const load=async()=>{try{const d=await api('/health');document.getElementById('settings-status').innerHTML=status('Worker responded: '+(d.status||'reachable')+'. '+(d.note||''),'success')}catch(e){document.getElementById('settings-status').innerHTML=status('Worker health unavailable: '+e.message,'error')}};document.getElementById('settings-refresh').onclick=load;void load();}
 else if(page==='index.html') void overviewPage();
