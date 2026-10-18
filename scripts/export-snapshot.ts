@@ -17,10 +17,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertNoSecrets, isMarketOpen, publicRuntimeConfig, redact, secretValues } from '@vortex/core';
 import {
+  deliveryStats,
   lastSuccessfulJob,
   lastSuccessfulJobsByKind,
   listAlerts,
-  listDeliveries,
   listQuality,
   listSignals,
   signalCounts,
@@ -28,7 +28,7 @@ import {
 } from '@vortex/db';
 import { WorkerRuntime } from '../apps/worker/src/runtime.js';
 import { healthSnapshot } from '../apps/worker/src/jobs/maintenance.js';
-import { modelRegistrySummary, performanceOverview, summarizeScan } from '../apps/worker/src/services/registry.js';
+import { deliveryTotal, modelRegistrySummary, performanceOverview, summarizeScan } from '../apps/worker/src/services/registry.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultOut = join(root, 'apps', 'web', 'public', 'snapshot.json');
@@ -63,7 +63,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
     rawQuality,
     budget,
     counts,
-    deliveries,
+    deliveryTotals,
     alerts,
     components,
     recentSignals,
@@ -78,7 +78,7 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       listQuality(client),
       runtime.keyPool.usageSnapshots(),
       signalCounts(client),
-      listDeliveries(client, 50),
+      deliveryStats(client),
       listAlerts(client, false, 20),
       healthSnapshot(runtime),
       listSignals(client, { limit: 25 }),
@@ -179,9 +179,10 @@ export async function buildSnapshot(runtime: WorkerRuntime): Promise<Record<stri
       },
       telegram: {
         configuration: runtime.telegram.configuration(),
-        sent: deliveries.filter((d) => d.status === 'SENT').length,
-        failed: deliveries.filter((d) => d.status === 'FAILED').length,
-        unconfirmed: deliveries.filter((d) => d.status === 'UNKNOWN').length,
+        // True ledger totals, not a sample of the most recent rows.
+        sent: deliveryTotal(deliveryTotals, 'SENT'),
+        failed: deliveryTotal(deliveryTotals, 'FAILED'),
+        unconfirmed: deliveryTotal(deliveryTotals, 'UNKNOWN'),
       },
       components,
       model: registry.model,
