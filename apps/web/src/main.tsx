@@ -31,6 +31,7 @@ import {
   wilsonInterval,
   workerBadge as workerBadgeFor,
   type BreakdownRow,
+  type CandlePayload,
   type PerformanceOverview,
   type HealthPayload,
   type RelayFailureKind,
@@ -267,6 +268,7 @@ function Dashboard() {
   const [signalFormat, setSignalFormat] = useState<'compact' | 'detailed' | 'telegram'>('compact');
   const [signalSearch, setSignalSearch] = useState('');
   const [signalOutcomeFilter, setSignalOutcomeFilter] = useState<'all' | 'pending' | 'win' | 'loss' | 'draw'>('all');
+  const [selectedCandlePair, setSelectedCandlePair] = useState('EUR/USD');
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
   const [adminToken, setAdminToken] = useState('');
@@ -400,6 +402,13 @@ function Dashboard() {
   // rendered when the reader exists and answers.
   const performance = useRelay<PerformanceOverview>(() => relayPerformance(), 60_000);
   const performanceValue = performance.result.state === 'ready' ? performance.result.value : null;
+  const candleHistory = useRelay<CandlePayload>(
+    () => relay.candles
+      ? relay.candles(selectedCandlePair, 90)
+      : Promise.resolve({ ok: false, status: 0, data: null, error: 'This data source does not expose candle history.', kind: 'error' }),
+    60_000,
+  );
+  useEffect(() => { void candleHistory.refresh(); }, [selectedCandlePair]);
 
   const refreshAll = useCallback(() => {
     void health.refresh();
@@ -452,6 +461,33 @@ function Dashboard() {
 
   const accuracyInterval =
     signalsValue && signalsValue.decisive > 0 ? wilsonInterval(signalsValue.wins, signalsValue.decisive) : null;
+  const candlePairs = marketData.length > 0 ? marketData.map((row) => row.pair) : ['EUR/USD', 'GBP/USD'];
+  const chartCandles = candleHistory.result.state === 'ready' ? candleHistory.result.value.candles : [];
+  const chartGeometry = useMemo(() => {
+    if (chartCandles.length === 0) return [];
+    const minPrice = Math.min(...chartCandles.map((candle) => candle.low));
+    const maxPrice = Math.max(...chartCandles.map((candle) => candle.high));
+    const range = maxPrice - minPrice || 1;
+    const left = 18;
+    const width = 564;
+    const top = 12;
+    const height = 156;
+    const xStep = chartCandles.length > 1 ? width / (chartCandles.length - 1) : 0;
+    const y = (price: number) => top + ((maxPrice - price) / range) * height;
+    return chartCandles.map((candle, index) => {
+      const openY = y(candle.open);
+      const closeY = y(candle.close);
+      return {
+        ...candle,
+        x: chartCandles.length > 1 ? left + index * xStep : left + width / 2,
+        highY: y(candle.high),
+        lowY: y(candle.low),
+        bodyY: Math.min(openY, closeY),
+        bodyHeight: Math.max(2, Math.abs(openY - closeY)),
+        up: candle.close >= candle.open,
+      };
+    });
+  }, [chartCandles]);
 
   return (
     <main aria-busy={health.result.state === 'loading' || summary.result.state === 'loading'}>
@@ -690,6 +726,36 @@ function Dashboard() {
                 ))}
               </dl>
             )
+          ) : null}
+        </Card>
+        <Card title="Market explorer" status={candleHistory.result.state === 'ready' ? (chartCandles.length > 0 ? 'CONNECTED' : 'NO DATA') : undefined}>
+          <div className="market-explorer-toolbar">
+            <label htmlFor="market-explorer-pair">Instrument</label>
+            <select id="market-explorer-pair" value={selectedCandlePair} onChange={(event) => setSelectedCandlePair(event.target.value)}>
+              {candlePairs.map((pair) => <option key={pair} value={pair}>{pair}</option>)}
+            </select>
+            <span className="muted">M1 · final candles only</span>
+          </div>
+          {candleHistory.result.state === 'loading' ? <Loading what="stored candle history" /> : null}
+          {candleHistory.result.state === 'error' ? (
+            <p className="muted">{!relay.candles ? 'This configured data source does not expose candle history. Use Supabase public_candles or the VORTEX relay /api/candles endpoint.' : candleHistory.result.message}</p>
+          ) : null}
+          {candleHistory.result.state === 'ready' && chartCandles.length === 0 ? <p className="muted">No final M1 candles are stored for {selectedCandlePair}. This chart will not synthesize missing prices.</p> : null}
+          {chartGeometry.length > 0 ? (
+            <>
+              <div className="market-chart-meta"><strong>{selectedCandlePair}</strong><span>Last close {chartCandles[chartCandles.length - 1]?.close}</span><span className="muted">{chartCandles.length} candles</span></div>
+              <svg className="market-candle-chart" viewBox="0 0 600 190" role="img" aria-label={selectedCandlePair + ' stored final one-minute candlestick chart'}>
+                {[0, 1, 2, 3].map((line) => <line key={line} x1="12" x2="588" y1={20 + line * 48} y2={20 + line * 48} className="chart-grid-line" />)}
+                {chartGeometry.map((candle) => (
+                  <g key={candle.openTime} className={candle.up ? 'candle-up' : 'candle-down'}>
+                    <title>{candle.openTime + ' · O ' + candle.open + ' H ' + candle.high + ' L ' + candle.low + ' C ' + candle.close + ' · ' + candle.provider}</title>
+                    <line x1={candle.x} x2={candle.x} y1={candle.highY} y2={candle.lowY} className="candle-wick" />
+                    <rect x={candle.x - Math.max(2, Math.min(5, 220 / chartGeometry.length))} y={candle.bodyY} width={Math.max(2, Math.min(10, 440 / chartGeometry.length))} height={candle.bodyHeight} rx="1" className="candle-body" />
+                  </g>
+                ))}
+              </svg>
+              <p className="muted market-chart-note">Latest stored candle: <Timestamp iso={chartCandles[chartCandles.length - 1]?.closeTime} />. Data comes from persisted provider candles; candle provenance is available on hover. This is a research view, not an execution chart.</p>
+            </>
           ) : null}
         </Card>
 
