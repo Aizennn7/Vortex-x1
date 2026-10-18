@@ -115,6 +115,8 @@ export function toLearningSummary(
     finishedAt: string | null;
     status: string;
     datasetSize: number | null;
+    datasetFrom: string | null;
+    datasetTo: string | null;
     error: string | null;
   }[],
 ): LearningSummaryView {
@@ -129,8 +131,8 @@ export function toLearningSummary(
           finishedAt: last.finishedAt,
           status: last.status,
           datasetSize: last.datasetSize,
-          datasetFrom: null,
-          datasetTo: null,
+          datasetFrom: last.datasetFrom,
+          datasetTo: last.datasetTo,
           reason: last.error ?? null,
         }
       : null,
@@ -138,6 +140,19 @@ export function toLearningSummary(
     note:
       'A run is skipped when the labelled dataset is unchanged or too small — that is the intended behaviour, not a stalled job. Promotion requires every gate to pass; a rejection keeps the previous champion.',
   };
+}
+
+/**
+ * Total deliveries in one ledger status, summed across delivery kinds
+ * (PUBLISH/SETTLEMENT). `deliveryStats` aggregates the whole table, so
+ * these are true totals — never a bounded sample of recent rows.
+ */
+export function deliveryTotal(stats: Record<string, number>, status: string): number {
+  let total = 0;
+  for (const [key, count] of Object.entries(stats)) {
+    if (key.endsWith(`:${status}`)) total += count;
+  }
+  return total;
 }
 
 /** Read the registry views without throwing when the tables are absent. */
@@ -155,6 +170,8 @@ export async function modelRegistrySummary(
           finishedAt: r.finishedAt,
           status: r.status,
           datasetSize: r.datasetSize,
+          datasetFrom: r.datasetFrom,
+          datasetTo: r.datasetTo,
           error: r.error,
         })),
       ),
