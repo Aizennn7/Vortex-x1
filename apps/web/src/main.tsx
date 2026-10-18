@@ -1,5 +1,5 @@
 /**
- * VORTEX SI status board.
+ * VORTEX SI command dashboard.
  *
  * This is the read-only operational dashboard: it renders only measured facts
  * and states plainly when something is not configured, not reachable, stale,
@@ -516,9 +516,9 @@ function Dashboard() {
 
       <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
         <div className="hero-copy">
-          <p className="eyebrow"><span className="status-orb" /> MARKET RESEARCH WORKSPACE</p>
-          <h2 id="hero-title">Read the market.<br /><em>Move with intention.</em></h2>
-          <p className="hero-description">A quieter view of the signal, the session, and the system behind every decision.</p>
+          <p className="eyebrow"><span className="status-orb" /> VORTEX SIGNAL INTELLIGENCE</p>
+          <h2 id="hero-title">Predict the market.<br /><em>Learn. Adapt. Evolve.</em></h2>
+          <p className="hero-description">VORTEX FOREX INTELLIGENCE · QUALIFIED SIGNALS · CONTINUOUS LEARNING</p>
           <div className="hero-actions"><a className="primary-link" href="#signals">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="#operations">System health</a></div>
           <p className="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p>
         </div>
