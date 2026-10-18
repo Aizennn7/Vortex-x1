@@ -141,6 +141,12 @@ describe('public plane', () => {
     expect(quality.status).toBe(200);
     expect(Array.isArray(quality.body.data.pairs)).toBe(true);
 
+    const candles = await api('/api/candles?pair=EUR%2FUSD&limit=20');
+    expect(candles.status).toBe(200);
+    expect(candles.body.data).toMatchObject({ pair: 'EUR/USD', timeframe: 'M1', finalOnly: true });
+    expect(Array.isArray(candles.body.data.candles)).toBe(true);
+    expect(candles.body.data.count).toBe(candles.body.data.candles.length);
+
     const health = await api('/api/health');
     expect(health.status).toBe(200);
     expect(Array.isArray(health.body.data.components)).toBe(true);
@@ -218,6 +224,8 @@ describe('public plane', () => {
       ['/api/signals?limit=1.5', 'limit'],
       ['/api/signals?from=not-a-date', 'from'],
       ['/api/signals?to=2026-13-45', 'to'],
+      ['/api/candles?pair=bad', 'pair'],
+      ['/api/candles?pair=EUR%2FUSD&timeframe=M5', 'timeframe'],
     ] as const) {
       const { status, body } = await api(path);
       expect({ path, status }).toEqual({ path, status: 400 });

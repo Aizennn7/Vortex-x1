@@ -92,6 +92,15 @@ describe('relay client', () => {
     expect((init.headers as Record<string, string>).accept).toBe('application/json');
   });
 
+  it('requests a bounded M1 candle window from the HTTP relay', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true, data: { pair: 'EUR/USD', timeframe: 'M1', candles: [], count: 0, finalOnly: true, note: 'stored final candles only' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await relay.candles?.('EUR/USD', 12);
+    expect(result?.ok).toBe(true);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/candles?pair=EUR%2FUSD&timeframe=M1&limit=12');
+  });
+
   it('never pretends a stopped or stale worker is running', () => {
     expect(normalizeWorkerLiveness(null)).toBeNull();
     expect(
@@ -212,6 +221,14 @@ describe('relay client', () => {
     expect(summary.data?.providerBudget?.dayRemainingPercent).toBe(90);
     expect(summary.data?.signals?.accuracy).toBe(60);
     expect(summary.data?.marketData[0]?.stale).toBe(true);
+
+    const candleHistory = await supa.candles?.('EUR/USD', 10);
+    expect(candleHistory?.ok).toBe(true);
+    expect(candleHistory?.data).toMatchObject({ pair: 'EUR/USD', timeframe: 'M1', count: 0, finalOnly: true });
+    const candleRequest = String(fetchMock.mock.calls[fetchMock.mock.calls.length - 1]?.[0]);
+    expect(candleRequest).toContain('public_candles');
+    expect(candleRequest).toContain('is_final=eq.true');
+    expect(candleRequest).toContain('limit=10');
   });
 
   it('reads static snapshot.json and dynamically ages worker and candle staleness', async () => {

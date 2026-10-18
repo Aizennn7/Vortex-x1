@@ -47,6 +47,8 @@ import {
   listKeys,
   listQuality,
   listSignals,
+  getCandles,
+  listPairs,
   promoteModel,
   safeEqual,
   publicKeyView,
@@ -68,7 +70,7 @@ import { runLearningCycle } from './jobs/learning.js';
 import { runMaintenance } from './jobs/maintenance.js';
 import { healthSnapshot } from './jobs/maintenance.js';
 import { withJob } from './jobs/job.js';
-import { isMarketOpen, toIso } from '@vortex/core';
+import { isMarketOpen, toIso, type Pair } from '@vortex/core';
 
 interface RouteContext {
   runtime: WorkerRuntime;
@@ -125,6 +127,7 @@ const PUBLIC_ROUTES: [string, string, (ctx: RouteContext) => Promise<unknown>][]
   ['GET', '/api/summary', summaryRoute],
   ['GET', '/api/config', configRoute],
   ['GET', '/api/signals', signalsRoute],
+  ['GET', '/api/candles', candlesRoute],
   ['GET', '/api/performance', performanceRoute],
   ['GET', '/api/quality', qualityRoute],
   ['GET', '/api/health', healthComponentsRoute],
@@ -550,6 +553,35 @@ async function signalsRoute(ctx: RouteContext): Promise<unknown> {
   const to = timestampParam(ctx.url.searchParams.get('to'), 'to');
   const rows = await listSignals(client, { limit, pairs, outcomes, from, to });
   return { signals: rows, count: rows.length };
+}
+
+async function candlesRoute(ctx: RouteContext): Promise<unknown> {
+  const { runtime, url } = ctx;
+  const pair = url.searchParams.get('pair')?.trim().toUpperCase() ?? '';
+  if (!/^[A-Z]{3}\/[A-Z]{3}$/.test(pair)) {
+    throw new HttpError(400, 'invalid_request', 'pair must be a supported pair such as EUR/USD');
+  }
+  const timeframe = (url.searchParams.get('timeframe') ?? 'M1').trim().toUpperCase();
+  if (timeframe !== 'M1') {
+    throw new HttpError(400, 'invalid_request', 'timeframe must be M1; only stored one-minute candles are exposed by this endpoint');
+  }
+  const limit = boundedInt(url.searchParams.get('limit'), 'limit', 90, 120);
+  const client = db(runtime);
+  const configured = runtime.config.pairs as string[];
+  const storedPairs = await listPairs(client);
+  const pairIsEnabled = storedPairs.some((row) => row.pair === pair && row.enabled);
+  if (!pairIsEnabled && !configured.includes(pair)) {
+    throw new HttpError(404, 'pair_not_found', 'pair is not in the configured VORTEX instrument universe');
+  }
+  const candles = await getCandles(client, { pair: pair as Pair, timeframe: 'M1', limit, finalOnly: true });
+  return {
+    pair,
+    timeframe,
+    candles,
+    count: candles.length,
+    finalOnly: true,
+    note: 'Only stored final candles are returned. Provider and candle timestamps are preserved; no candles are synthesized.',
+  };
 }
 
 async function performanceRoute(ctx: RouteContext): Promise<unknown> {

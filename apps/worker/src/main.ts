@@ -114,7 +114,7 @@ async function main(): Promise<void> {
       component: 'http',
       host,
       port,
-      publicRoutes: ['/health', '/ready', '/api/summary', '/api/config', '/api/signals', '/api/performance'],
+      publicRoutes: ['/health', '/ready', '/api/summary', '/api/config', '/api/signals', '/api/candles', '/api/performance'],
       adminRoutesEnabled: runtime.config.adminToken.length >= 16,
     });
   } else {

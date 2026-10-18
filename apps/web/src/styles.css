@@ -235,3 +235,206 @@ button, .primary-link, .workspace-nav a { -webkit-tap-highlight-color: transpare
   border-radius: 10px;
 }
 .signal-action-status { margin: .15rem 0 0; overflow-wrap: anywhere; }
+
+
+/* NEXUS-inspired ocean-glass theme adapted to VORTEX's truthful read-only dashboard.
+   Presentation-only: keep the existing operational state and signal gates untouched. */
+:root {
+  --bg: #071018;
+  --panel: rgba(9, 24, 36, .72);
+  --panel-edge: rgba(137, 205, 220, .18);
+  --text: #e8f5f7;
+  --muted: #9ab3bc;
+  --accent: #8bd5df;
+  --good: #9bdac0;
+  --rose: #8bd5df;
+}
+body {
+  background:
+    radial-gradient(ellipse at 76% 2%, rgba(40, 139, 160, .23), transparent 36rem),
+    radial-gradient(ellipse at 8% 40%, rgba(38, 91, 135, .18), transparent 42rem),
+    radial-gradient(ellipse at 58% 100%, rgba(25, 112, 128, .12), transparent 40rem),
+    #050c13;
+}
+body::before {
+  opacity: .22;
+  background-image:
+    radial-gradient(1px 1px at 11% 17%, #d6f8fa 99%, transparent),
+    radial-gradient(1px 1px at 31% 69%, #d6f8fa 99%, transparent),
+    radial-gradient(1px 1px at 73% 24%, #d6f8fa 99%, transparent),
+    radial-gradient(1px 1px at 88% 61%, #d6f8fa 99%, transparent),
+    radial-gradient(1px 1px at 57% 82%, #d6f8fa 99%, transparent);
+  background-size: 360px 280px;
+}
+h1 { color: #d6f6f7; }
+button:hover:not(:disabled) {
+  background: rgba(105, 206, 219, .12);
+  border-color: rgba(105, 206, 219, .52);
+}
+button:focus-visible, a:focus-visible, code:focus-visible {
+  outline-color: #8bd5df;
+}
+.workspace-nav {
+  border-color: rgba(137, 205, 220, .16);
+  background: rgba(5, 15, 23, .78);
+}
+.workspace-nav a:hover, .quiet-link:hover { color: #d8fbff; }
+.cosmic-hero {
+  border-color: rgba(112, 206, 220, .23);
+  background:
+    radial-gradient(ellipse at 78% 45%, rgba(30, 153, 176, .2), transparent 36%),
+    linear-gradient(110deg, rgba(5, 17, 27, .97), rgba(8, 31, 43, .86) 58%, rgba(11, 54, 65, .55));
+}
+.cosmic-hero::after {
+  background: radial-gradient(ellipse at 78% 48%, rgba(65, 194, 205, .15), transparent 35%),
+    linear-gradient(90deg, rgba(4, 12, 20, .1), transparent);
+}
+.eyebrow, .feature-kicker { color: #8bd5df; }
+.cosmic-hero h2 em, .feature-card h2 em, .section-heading h2 em { color: #8bd5df; }
+.primary-link {
+  color: #05212a;
+  background: linear-gradient(135deg, #c4f5f3, #6dc6d5);
+}
+.planet {
+  background:
+    radial-gradient(circle at 33% 27%, rgba(211, 255, 250, .92), transparent 7%),
+    radial-gradient(ellipse at 35% 31%, #79d4d8 0%, #287f91 25%, #17495f 52%, #071521 73%);
+  box-shadow: inset -28px -14px 45px rgba(2, 8, 16, .82),
+    inset 8px 5px 18px rgba(205, 255, 250, .22),
+    0 0 65px rgba(58, 190, 202, .18);
+}
+.planet::before {
+  background: repeating-linear-gradient(168deg, transparent 0 17px, rgba(164, 239, 239, .2) 19px, transparent 24px 38px);
+}
+.planet-ring { border-color: rgba(174, 238, 239, .45); }
+.orbit-dot { background: #d8ffff; box-shadow: 0 0 15px #6ddce3; }
+.blossom { color: #7bd2df; }
+.blossom-three { color: #c7f3f4; }
+.feature-card {
+  background: linear-gradient(145deg, rgba(12, 35, 47, .88), rgba(5, 17, 27, .9));
+}
+.vip-card { background: radial-gradient(ellipse at 100% 0%, rgba(30, 153, 176, .13), transparent 55%), linear-gradient(145deg, rgba(12, 35, 47, .9), rgba(5, 17, 27, .9)); }
+.session-card { background: radial-gradient(ellipse at 100% 0%, rgba(74, 131, 165, .14), transparent 55%), linear-gradient(145deg, rgba(10, 31, 44, .9), rgba(5, 17, 27, .9)); }
+.feature-mark, .session-icon {
+  color: #8bd5df;
+  background: rgba(105, 206, 219, .09);
+  border-color: rgba(105, 206, 219, .18);
+}
+.feature-list li::before { color: #8bd5df; }
+.utc-chip, .muted-chip, .session-value { color: #b5e8ec; }
+.card {
+  background: linear-gradient(150deg, rgba(10, 29, 42, .88), rgba(5, 16, 26, .9));
+}
+.card:hover, .feature-card:hover { border-color: rgba(112, 206, 220, .3); }
+.signal-tools {
+  border-color: rgba(112, 206, 220, .2);
+  background: linear-gradient(145deg, rgba(12, 35, 47, .88), rgba(5, 17, 27, .9));
+}
+.signal-workflow-link, .signal-preview-label { color: #8bd5df; }
+.signal-preview { border-color: rgba(112, 206, 220, .16); }
+.signal-preview pre { color: #e0f7f8; }
+.signal-admin-access { background: rgba(7, 25, 36, .78); }
+code { color: #9be2e8; }
+::selection { color: #06212a; background: #a8e8ea; }
+@media (prefers-reduced-motion: reduce) {
+  .planet-art, .planet, .planet-ring, .orbit-dot,
+  .blossom-one, .blossom-two, .blossom-three, body::before {
+    animation: none !important;
+  }
+}
+
+/* Searchable NEXUS-style signal registry controls */
+.signal-registry-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px;
+  margin: 0 0 14px;
+  border: 1px solid rgba(137, 205, 220, .18);
+  border-radius: 14px;
+  background: rgba(5, 18, 27, .48);
+}
+.signal-registry-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+  flex: 1 1 190px;
+  color: var(--muted);
+  font-size: .82rem;
+}
+.signal-registry-controls input,
+.signal-registry-controls select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 11px;
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 9px;
+  background: rgba(3, 13, 21, .9);
+  font: inherit;
+}
+.signal-registry-controls input::placeholder { color: #78939e; }
+.signal-registry-controls button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+.signal-registry-controls button:disabled { cursor: not-allowed; opacity: .45; }
+.signal-registry-controls > span { padding-bottom: 12px; font-size: .82rem; }
+@media (max-width: 620px) {
+  .signal-registry-controls { align-items: stretch; }
+  .signal-registry-controls label { flex-basis: 100%; }
+  .signal-registry-controls button { width: 100%; }
+  .signal-registry-controls > span { padding-bottom: 0; }
+}
+
+/* NEXUS-inspired candle explorer, driven only by persisted final candles */
+.market-explorer-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.market-explorer-toolbar label { color: var(--muted); font-size: .84rem; }
+.market-explorer-toolbar select {
+  min-height: 38px;
+  padding: 7px 10px;
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 9px;
+  background: rgba(3, 13, 21, .9);
+  font: inherit;
+}
+.market-explorer-toolbar .muted { margin-left: auto; font-size: .8rem; }
+.market-chart-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 10px 0;
+  font-variant-numeric: tabular-nums;
+}
+.market-chart-meta strong { color: var(--accent); }
+.market-chart-meta span { font-size: .86rem; }
+.market-candle-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 150px;
+  border: 1px solid rgba(137, 205, 220, .13);
+  border-radius: 12px;
+  background: rgba(2, 12, 20, .56);
+}
+.chart-grid-line { stroke: rgba(137, 205, 220, .13); stroke-width: 1; stroke-dasharray: 3 5; }
+.candle-wick { stroke-width: 1.2; }
+.candle-up .candle-wick, .candle-up .candle-body { stroke: #72d6b2; fill: #72d6b2; }
+.candle-down .candle-wick, .candle-down .candle-body { stroke: #ee8f9b; fill: #ee8f9b; }
+.market-chart-note { margin-top: 10px; font-size: .82rem; }
+@media (max-width: 620px) {
+  .market-explorer-toolbar { align-items: stretch; }
+  .market-explorer-toolbar label { width: 100%; }
+  .market-explorer-toolbar select { width: 100%; }
+  .market-explorer-toolbar .muted { margin-left: 0; }
+}
