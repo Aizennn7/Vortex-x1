@@ -272,6 +272,8 @@ function Dashboard() {
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
   const scanTriggerUrl = (import.meta.env.VITE_SCAN_TRIGGER_URL as string | undefined)?.trim() ?? '';
+  const turnstileSiteKey = (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined)?.trim() ?? '';
+  const [turnstileToken, setTurnstileToken] = useState('');
   const [startingProfile, setStartingProfile] = useState<'VIP' | 'Session' | null>(null);
 
   const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
@@ -335,7 +337,7 @@ function Dashboard() {
   }, [signals.refresh]);
 
   const startSignalScan = useCallback(async (profile: 'VIP' | 'Session') => {
-    if (!scanTriggerUrl) {
+    if (!scanTriggerUrl || !turnstileSiteKey) {
       setSignalActionStatus('Scan trigger is not configured yet. Deploy the protected scan-trigger function and set VITE_SCAN_TRIGGER_URL in the Pages build environment.');
       return;
     }
@@ -345,7 +347,7 @@ function Dashboard() {
       const response = await fetch(scanTriggerUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ profile }),
+        body: JSON.stringify({ profile, turnstileToken }),
       });
       const payload = await response.json().catch(() => ({})) as { error?: string };
       if (!response.ok) throw new Error(payload.error || 'Scan trigger rejected (HTTP ' + response.status + ')');
@@ -356,7 +358,7 @@ function Dashboard() {
     } finally {
       setStartingProfile(null);
     }
-  }, [scanTriggerUrl, signals.refresh, summary.refresh]);
+  }, [scanTriggerUrl, turnstileSiteKey, turnstileToken, signals.refresh, summary.refresh]);
 
   const exportSignalRegistry = useCallback(() => {
     if (filteredSignals.length === 0) {
@@ -526,7 +528,8 @@ function Dashboard() {
       </section>
 
       <section className="signal-admin-access" aria-label="Signal scan trigger status">
-        <strong>Scan trigger: {scanTriggerUrl ? 'configured' : 'setup required'}</strong>
+        <strong>Scan trigger: {scanTriggerUrl && turnstileSiteKey ? 'configured' : 'setup required'}</strong>
+        {turnstileSiteKey ? <Turnstile siteKey={turnstileSiteKey} onToken={setTurnstileToken} /> : <p className="feature-note">Human verification is not configured.</p>}
         <p className="feature-note">Scan requests use a protected server-side trigger. No GitHub credential is stored in this public dashboard. {scanTriggerUrl ? 'Use VIP Start or Session Start to queue a scan.' : 'Complete the one-time deployment steps in docs/SCAN-TRIGGER-SETUP.md.'}</p>
         <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
@@ -1080,6 +1083,36 @@ function Dashboard() {
       </footer>
     </main>
   );
+}
+
+
+function Turnstile({ siteKey, onToken }: { siteKey: string; onToken: (token: string) => void }) {
+  const host = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    let widgetId: string | undefined;
+    let active = true;
+    const render = () => {
+      const api = (window as unknown as { turnstile?: { render: (el: HTMLElement, opts: { sitekey: string; callback: (token: string) => void; 'expired-callback': () => void; 'error-callback': () => void }) => string; remove: (id: string) => void } }).turnstile;
+      if (!active || !host.current || !api || widgetId) return;
+      widgetId = api.render(host.current, { sitekey: siteKey, callback: onToken, 'expired-callback': () => onToken(''), 'error-callback': () => onToken('') });
+    };
+    let script = document.querySelector<HTMLScriptElement>('script[data-vortex-turnstile]');
+    if (!script) {
+      script = document.createElement('script');
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.async = true; script.defer = true; script.dataset.vortexTurnstile = 'true';
+      document.head.appendChild(script);
+    }
+    script.addEventListener('load', render);
+    render();
+    return () => {
+      active = false;
+      script?.removeEventListener('load', render);
+      const api = (window as unknown as { turnstile?: { remove: (id: string) => void } }).turnstile;
+      if (widgetId && api) api.remove(widgetId);
+    };
+  }, [siteKey, onToken]);
+  return <div className="turnstile-container" ref={host} aria-label="Human verification" />;
 }
 
 const container = document.getElementById('root');
