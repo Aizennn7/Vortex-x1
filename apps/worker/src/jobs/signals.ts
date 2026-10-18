@@ -250,6 +250,19 @@ export async function runSignalJob(
     `signal-${boundary}`,
     async () => {
       const summary = await runSignalCycle(runtime, now);
+      // Keep a compact, structured copy in Actions logs as well as job_runs.
+      // This lets operators distinguish no qualifying setup from stale data,
+      // market closure, missed timing, and provider failures without DB access.
+      runtime.logger.info('signal cycle summary', {
+        component: 'signals',
+        slot: summary.slot,
+        evaluated: summary.evaluated,
+        published: summary.published,
+        noTradePairs: summary.noTrade,
+        blocked: summary.blocked,
+        bestMiss: summary.bestMiss,
+        detail: summary.detail.slice(0, 10),
+      });
       return {
         status: 'SUCCEEDED',
         detail: {
@@ -259,7 +272,7 @@ export async function runSignalJob(
           noTrade: summary.evaluated === summary.noTrade,
           blocked: summary.blocked,
           bestMiss: summary.bestMiss,
-          detail: summary.detail.slice(0, 6),
+          detail: summary.detail.slice(0, 10),
         },
       };
     },
