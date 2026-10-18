@@ -426,6 +426,48 @@ describe('signal lifecycle', () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0]?.features).toEqual([1, 0.7, 0.2]);
   });
+
+  it('can exclude engine versions whose feature encoding changed', async () => {
+    // Rows stored under an old engine version can carry a stale
+    // feature layout; the exclusion filter is the hook that keeps
+    // them out of a training set built by a newer engine.
+    const legacy = await insertSignal(db.client, {
+      ...baseSignal,
+      idempotencyKey: 'sig|EUR/USD|2026-03-02T10:06:00.000Z|BUY|legacy-engine',
+      scheduledEntryAt: '2026-03-02T10:06:00.000Z',
+      publishAt: '2026-03-02T10:05:00.000Z',
+      engineVersion: 'legacy-engine',
+    });
+    expect(legacy.created).toBe(true);
+    const settled = await applySettlement(db.client, {
+      id: legacy.record!.id,
+      outcome: 'LOSS',
+      status: 'SETTLED',
+      entryPrice: 1.1,
+      exitPrice: 1.09,
+      grossPips: -10,
+      costPips: 1,
+      realizedPips: -11,
+      mfePips: 0,
+      maePips: -2,
+      outcomeRule: 'net_after_costs_v1',
+      outcomeFlags: [],
+      outcomeDetail: 'stopped out',
+    });
+    expect(settled).toBe(true);
+
+    const unfiltered = await listResolvedForLearning(db.client, { sinceDays: 3650 });
+    expect(unfiltered.some((r) => r.engineVersion === 'legacy-engine')).toBe(true);
+
+    const filtered = await listResolvedForLearning(db.client, {
+      sinceDays: 3650,
+      excludedEngines: ['legacy-engine'],
+    });
+    expect(filtered.some((r) => r.engineVersion === 'legacy-engine')).toBe(false);
+    // Excluding one engine must not drop the others.
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.every((r) => r.engineVersion !== 'legacy-engine')).toBe(true);
+  });
 });
 
 describe('job coordination', () => {
