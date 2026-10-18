@@ -370,7 +370,7 @@ function Dashboard() {
     const columns = ['id', 'pair', 'decision', 'scheduledEntryAtUtc', 'strategy', 'confidenceRankingScore', 'status', 'outcome', 'realizedPips'];
     const quote = (value: unknown) => '"' + String(value ?? '').replace(/"/g, '""') + '"';
     const rows = filteredSignals.map((signal) => [signal.id, signal.pair, signal.decision, signal.scheduledEntryAt, signal.strategy, signal.confidence, signal.status, signal.outcome, signal.realizedPips]);
-    const csv = [columns.map(quote).join(','), ...rows.map((row) => row.map(quote).join(','))].join('\\r\\n');
+    const csv = [columns.map(quote).join(','), ...rows.map((row) => row.map(quote).join(','))].join('\r\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
