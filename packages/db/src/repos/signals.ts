@@ -392,7 +392,14 @@ export async function listSignals(client: SqlClient, query: SignalQuery = {}): P
   return rows.rows.map(rowToSignalRecord);
 }
 
-/** Raw records for the learning dataset (includes features + flags). */
+/**
+ * Raw records for the learning dataset (includes features + flags).
+ *
+ * `excludedEngines` drops rows stored under an engine version whose
+ * feature encoding is no longer trustworthy (e.g. after a feature-set
+ * change), so stale-format rows cannot silently enter a training set.
+ * The learning layer re-filters DRAW/UNRESOLVED records regardless.
+ */
 export async function listResolvedForLearning(
   client: SqlClient,
   params: { limit?: number; sinceDays?: number; excludedEngines?: string[] } = {},
@@ -412,6 +419,19 @@ export async function listResolvedForLearning(
     engineVersion: string;
   }[]
 > {
+  const excluded = params.excludedEngines ?? [];
+  // Parameter positions are built in order so the optional engine
+  // exclusion can sit between the time window and the limit.
+  const values: unknown[] = [String(params.sinceDays ?? 365)];
+  const conditions = [
+    `scheduled_entry_at >= now() - ($1 || ' days')::interval`,
+    `outcome is not null`,
+  ];
+  if (excluded.length > 0) {
+    values.push(excluded);
+    conditions.push(`engine_version <> all($${values.length}::text[])`);
+  }
+  values.push(Math.min(params.limit ?? 50_000, 200_000));
   const rows = await client.query<{
     id: string;
     pair: string;
@@ -429,11 +449,10 @@ export async function listResolvedForLearning(
     `select id, pair, strategy, regime, confidence, scheduled_entry_at, horizon_seconds,
             outcome, outcome_flags, features, model_probability, engine_version
        from signals
-      where scheduled_entry_at >= now() - ($1 || ' days')::interval
-        and outcome is not null
+      where ${conditions.join('\n        and ')}
       order by scheduled_entry_at asc
-      limit $2`,
-    [String(params.sinceDays ?? 365), Math.min(params.limit ?? 50_000, 200_000)],
+      limit $${values.length}`,
+    values,
   );
   return rows.rows.map((r) => ({
     signalId: r.id,
