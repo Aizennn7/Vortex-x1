@@ -1,6 +1,6 @@
 # NEXUS → VORTEX integration plan
 
-**Status:** staged integration; this document does not claim the two applications have been fully merged or that any hosted service is live.
+**Status:** one consolidated integration PR. All code changes for this integration are kept in this PR; this does not claim hosted services are live or that NEXUS's separate backend has been deployed.
 
 ## Decision
 
@@ -11,19 +11,21 @@ Use **VORTEX SI as the canonical runtime and data model** and selectively port t
 
 NEXUS is currently readable through the connected GitHub integration but reports no push permission. This integration therefore makes changes in VORTEX only; it does not modify the NEXUS repository.
 
-## What is included in this first slice
+## Scope of this single PR
 
-- Apply NEXUS's midnight-ocean Liquid Glass visual direction to the existing VORTEX dashboard, keeping the current React components and operational semantics intact.
-- Preserve VORTEX's real data states, explicit UTC timestamps, failure/backoff behavior, stale-data warnings, NO-TRADE/NO-DATA distinction and read-only/no-order boundary.
-- Keep this change presentation-only: no signal gates, provider usage, schema, delivery, credentials, schedules, model weights or settlement behavior change.
+- Apply NEXUS's midnight-ocean Liquid Glass visual direction to VORTEX's existing React dashboard, including responsive surfaces, keyboard focus, and reduced-motion support.
+- Add a searchable, outcome-filterable signal registry and CSV export of the currently loaded, filtered records. Export includes UTC entry time, ranking score, status, outcome and paper pips; it does not imply that confidence is a win probability.
+- Keep VORTEX's live data states, UTC timestamps, failure/backoff behavior, stale-data warnings, NO-TRADE/NO-DATA distinction, operational health, provider budget, model validation and learning views as the canonical source of truth.
+- Do not run NEXUS's independent browser prediction engine alongside VORTEX. Its current audit documents settlement, candle timing and persistence risks; those patterns are not safe to transplant as-is.
+- The new registry interactions are read-only. No signal gates, provider usage, schema, delivery, credentials, schedules, model weights or settlement behavior are changed by these UI features.
 
 ## Port selectively, not wholesale
 
 | NEXUS capability | VORTEX integration direction | Acceptance condition |
 |---|---|---|
 | Ocean-glass design system and responsive shell | Reuse the visual language in VORTEX's React dashboard | Desktop/mobile checks; keyboard focus and reduced-motion support; no change to data behavior |
-| Signal registry and detail history | Extend the existing signal/settlement views backed by VORTEX repositories | Durable database rows only; explicit pending/win/loss/push/invalid states; idempotent writes |
-| Market explorer and candle chart | Add a view over stored VORTEX candles and signal markers | No invented candles or prices; stale/feed provenance is visible |
+| Signal registry and detail history | Existing durable VORTEX rows plus searchable/filterable UI and CSV export in this PR | No client-created outcomes; export only real records loaded from the configured data source |
+| Market explorer and candle chart | Existing VORTEX market-data quality matrix is retained; a true candle chart requires a supported candle-read contract before it can be safely added | No invented candles or prices; stale/feed provenance must be visible |
 | Operational health matrix | Build on VORTEX's existing health, job, provider-budget and learning read models | Every state has a real source and timestamp; no fake liveness between Actions runs |
 | Learning and model validation | Retain VORTEX's walk-forward validation, holdout/embargo, calibration and promotion gates | Shadow-only training first; model promotion requires recorded validation evidence and rollback |
 | Telegram / outbound notifications | Keep delivery separately configured and disabled by default | Idempotent delivery ledger; no secrets in the browser; no implicit activation |
