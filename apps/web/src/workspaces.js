@@ -1,5 +1,5 @@
 import './styles.css';
-import { relay } from './relay.js';
+import { relay } from './relay';
 
 const root = document.getElementById('workspace-root');
 const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
