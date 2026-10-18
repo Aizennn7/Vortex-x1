@@ -16,24 +16,20 @@ export class KeyedMutex {
     // Chain onto the previous holder; swallow its rejection so one failure
     // cannot poison the queue.
     const current = previous.then(fn, fn);
-    this.tails.set(
-      key,
-      current.catch(() => undefined),
-    );
+    // The map must hold the *tail* (the rejection-swallowing promise), and
+    // the cleanup must compare against that same object — otherwise the
+    // entry is never removed and one settled promise is retained per key
+    // forever.
+    const tail = current.catch(() => undefined);
+    this.tails.set(key, tail);
     try {
       return await current;
     } finally {
-      if (this.tails.get(key) === current || (await this.isTail(key, current))) {
-        // Only clear when nothing else has queued behind us.
-        queueMicrotask(() => {
-          if (this.tails.get(key) === current) this.tails.delete(key);
-        });
-      }
+      queueMicrotask(() => {
+        // Only clear when nothing has queued behind us in the meantime.
+        if (this.tails.get(key) === tail) this.tails.delete(key);
+      });
     }
-  }
-
-  private async isTail(key: string, candidate: unknown): Promise<boolean> {
-    return this.tails.get(key) === candidate;
   }
 
   get size(): number {
