@@ -271,7 +271,7 @@ function Dashboard() {
   const [selectedCandlePair, setSelectedCandlePair] = useState('EUR/USD');
   const [signalActionStatus, setSignalActionStatus] = useState('');
   const [refreshingSignals, setRefreshingSignals] = useState(false);
-  const [adminToken, setAdminToken] = useState('');
+  const scanTriggerUrl = (import.meta.env.VITE_SCAN_TRIGGER_URL as string | undefined)?.trim() ?? '';
   const [startingProfile, setStartingProfile] = useState<'VIP' | 'Session' | null>(null);
 
   const latestSignal = signals.result.state === 'ready' ? signals.result.value.signals[0] : undefined;
@@ -335,34 +335,28 @@ function Dashboard() {
   }, [signals.refresh]);
 
   const startSignalScan = useCallback(async (profile: 'VIP' | 'Session') => {
-    if (!adminToken.trim()) {
-      setSignalActionStatus('Enter a repository-scoped GitHub fine-grained token with Actions: write permission. It stays in page memory only.');
+    if (!scanTriggerUrl) {
+      setSignalActionStatus('Scan trigger is not configured yet. Deploy the protected scan-trigger function and set VITE_SCAN_TRIGGER_URL in the Pages build environment.');
       return;
     }
     setStartingProfile(profile);
-    setSignalActionStatus('Requesting GitHub Actions to run a fresh ' + profile + ' signal scan…');
+    setSignalActionStatus('Requesting a fresh ' + profile + ' scan…');
     try {
-      const response = await fetch('https://api.github.com/repos/Aizennn7/Vortex-x1/actions/workflows/vortex-jobs.yml/dispatches', {
+      const response = await fetch(scanTriggerUrl, {
         method: 'POST',
-        headers: {
-          accept: 'application/vnd.github+json',
-          authorization: 'Bearer ' + adminToken.trim(),
-          'X-GitHub-Api-Version': '2022-11-28',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ ref: 'main', inputs: { job: 'signals' } }),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ profile }),
       });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error('GitHub Actions dispatch failed (HTTP ' + response.status + '): ' + (detail || response.statusText));
-      }
-      setSignalActionStatus(profile + ' start accepted by GitHub Actions. The shared signal scan is queued; eligible signals will be published by the pipeline when it completes. No-trade is possible when no opportunity passes the gates. Track progress in Actions.');
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'Scan trigger rejected (HTTP ' + response.status + ')');
+      setSignalActionStatus(profile + ' scan accepted. The shared pipeline is queued; the dashboard refreshes published signals automatically. A scan may produce no signal when no opportunity passes the quality gates.');
+      await Promise.all([signals.refresh(), summary.refresh()]);
     } catch (error) {
-      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message + '. Check the token scope (Actions: write), token expiry, and repository access.');
+      setSignalActionStatus('Could not start ' + profile + ': ' + (error as Error).message);
     } finally {
       setStartingProfile(null);
     }
-  }, [adminToken]);
+  }, [scanTriggerUrl, signals.refresh, summary.refresh]);
 
   const exportSignalRegistry = useCallback(() => {
     if (filteredSignals.length === 0) {
@@ -531,10 +525,9 @@ function Dashboard() {
         <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
       </section>
 
-      <section className="signal-admin-access" aria-label="Signal scan authorization">
-        <label htmlFor="signal-github-token">GitHub Actions authorization</label>
-        <input id="signal-github-token" type="password" autoComplete="off" value={adminToken} onChange={(event) => setAdminToken(event.target.value)} placeholder="Fine-grained GitHub token (not saved)" />
-        <p className="feature-note">Create a fine-grained token restricted to this repository with Actions: write permission. It is sent directly to api.github.com over HTTPS and is never saved in browser storage or bundled into the site. Anyone who can run scripts in this page could access a token while entered, so use a narrowly scoped, short-lived token.</p>
+      <section className="signal-admin-access" aria-label="Signal scan trigger status">
+        <strong>Scan trigger: {scanTriggerUrl ? 'configured' : 'setup required'}</strong>
+        <p className="feature-note">Scan requests use a protected server-side trigger. No GitHub credential is stored in this public dashboard. {scanTriggerUrl ? 'Use VIP Start or Session Start to queue a scan.' : 'Complete the one-time deployment steps in docs/SCAN-TRIGGER-SETUP.md.'}</p>
         <p className="signal-action-status" role="status" aria-live="polite">{signalActionStatus}</p>
       </section>
 
