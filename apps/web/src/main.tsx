@@ -512,9 +512,15 @@ function Dashboard() {
         {healthWarning ? <StaleNotice message={healthWarning.message} since={health.refreshedAt ?? summary.refreshedAt} /> : null}
       </div>
 
-      <nav className="workspace-nav" aria-label="Workspace sections">
-        <a href="#overview">Overview</a><a href="#vip">VIP</a><a href="#sessions">Session list</a><a href="#signals">Signals</a><a href="#delivery">Delivery</a><a href="#operations">Operations</a>
-      </nav>
+      <div className="nexus-shell">
+      <aside className="nexus-sidebar" aria-label="VORTEX navigation">
+        <a className="nexus-brand" href="#overview"><span className="nexus-brand-mark">V</span><span><strong>VORTEX</strong><small>Predict · Learn · Grow</small></span></a>
+        <nav className="workspace-nav" aria-label="Workspace sections">
+          <a href="#overview">⌂ <span>Overview</span></a><a href="#signals">⌁ <span>Signals</span></a><a href="#markets">▥ <span>Markets</span></a><a href="#learning">♧ <span>AI Learning</span></a><a href="#data-cloud">☁ <span>Data & Cloud</span></a><a href="#delivery">➤ <span>Telegram</span></a><a href="#performance">⌁ <span>Performance</span></a><a href="#operations">⚙ <span>System Health</span></a><a href="#settings">⚙ <span>Settings</span></a>
+        </nav>
+        <p className="nexus-sidebar-quote">“The future belongs to those who never stop exploring.”</p>
+      </aside>
+      <div className="nexus-workspace">
 
       <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
         <div className="hero-copy">
@@ -700,7 +706,7 @@ function Dashboard() {
           ) : null}
         </Card>
 
-        <Card title="Market data" status={marketDataBadge}>
+        <div id="markets"><Card title="Market data" status={marketDataBadge}>
           {summary.result.state === 'loading' ? <Loading what="market data quality" /> : null}
           {summary.result.state === 'error' ? <Failure message={summary.result.message} kind={summary.result.kind} /> : null}
           {summaryValue ? (
@@ -753,7 +759,7 @@ function Dashboard() {
               <p className="muted market-chart-note">Latest stored candle: <Timestamp iso={chartCandles[chartCandles.length - 1]?.closeTime} />. Data comes from persisted provider candles; candle provenance is available on hover. This is a research view, not an execution chart.</p>
             </>
           ) : null}
-        </Card>
+        </Card></div>
 
         <Card title="Provider budget" status={budget ? (budget.dayRemainingPercent < 10 ? 'DEGRADED' : 'CONNECTED') : undefined}>
           {budget ? (
@@ -1081,6 +1087,16 @@ function Dashboard() {
       <footer className="muted">
         VORTEX SI is a research and notification system. Paper figures are simulations. Nothing here is financial advice.
       </footer>
+      </div>
+      <aside className="nexus-creator-rail" aria-label="Project identity">
+        <div className="creator-top"><span className="creator-seal">✧</span><div><small>Created for</small><strong>VORTEX</strong><small>Dream · Build · Automate</small></div></div>
+        <div className="creator-art" aria-hidden="true"><div className="creator-planet"></div><div className="creator-silhouette">V</div></div>
+        <div className="creator-emblem">V</div><h2>VORTEX</h2><p className="creator-tagline">PREDICT · LEARN · GROW</p>
+        <div className="creator-divider"></div><p className="creator-bio">Research. Signals. Continuous improvement.</p>
+        <p className="creator-signoff">VORTEX SI</p>
+      </aside>
+      </div>
+      <div className="nexus-brand-strip" aria-label="Branding elements"><strong>VORTEX</strong><span>◈ Clean</span><span>◈ Modern</span><span>◈ Research-first</span><span className="brand-orbit">◎</span><small>More than a signal. A system.</small></div>
     </main>
   );
 }
