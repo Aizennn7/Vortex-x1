@@ -748,12 +748,25 @@ export function normalizeWorkerLiveness(
   };
 }
 
-function isFxMarketOpenAt(date: Date): boolean {
+/**
+ * FX market-open approximation for the badge (UTC, Mon–Fri).
+ *
+ * Must mirror `isMarketOpen` in @vortex/core exactly: the worker
+ * suppresses ingestion and signals outside these hours, so a badge
+ * that disagrees would call the market open during the hour the
+ * engine already treats as closed (Friday 21:00–22:00 UTC) and
+ * closed during the hour the engine treats as open (Sunday
+ * 21:00–22:00 UTC). The constants are duplicated on purpose —
+ * the dashboard bundle must not import the server package.
+ */
+const FX_WEEKEND_START_UTC_HOUR = 21; // Friday close, Sunday open
+
+export function isFxMarketOpenAt(date: Date): boolean {
   const day = date.getUTCDay();
   const hour = date.getUTCHours();
-  if (day === 6) return false;
-  if (day === 0 && hour < 22) return false;
-  if (day === 5 && hour >= 22) return false;
+  if (day === 6) return false; // Saturday
+  if (day === 5 && hour >= FX_WEEKEND_START_UTC_HOUR) return false;
+  if (day === 0 && hour < FX_WEEKEND_START_UTC_HOUR) return false;
   return true;
 }
 
