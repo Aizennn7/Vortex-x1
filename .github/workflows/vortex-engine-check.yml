@@ -58,7 +58,12 @@ jobs:
             echo "OK: database connection secret is present."
           fi
           check_value VORTEX_SECRET_KEY "$VORTEX_SECRET_KEY"
-          check_value TWELVEDATA_API_KEY "$TWELVEDATA_API_KEY"
+          if [ -n "$TWELVEDATA_API_KEY" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_2 }}" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_3 }}" ] || [ -n "${{ secrets.TWELVEDATA_API_KEY_4 }}" ]; then
+            echo "OK: at least one Twelve Data key is configured."
+          else
+            echo "::error::Configure at least one of TWELVEDATA_API_KEY through TWELVEDATA_API_KEY_4 in GitHub Actions secrets."
+            missing=1
+          fi
           if [ "$missing" -ne 0 ]; then
             echo "::error::Add the missing engine values, then rerun this workflow."
             exit 1
@@ -95,17 +100,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          response="$(curl --fail --silent --show-error --get 'https://api.twelvedata.com/price' --data-urlencode 'symbol=EUR/USD' --data-urlencode "apikey=$TWELVEDATA_API_KEY" || true)"
-          if [ -z "$response" ] || ! printf '%s' "$response" | node -e '
-            let s=""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => {
-              try { const d=JSON.parse(s); process.exit(typeof d.price === "string" && Number.isFinite(Number(d.price)) ? 0 : 1); }
+          keys=("$TWELVEDATA_API_KEY" "$TWELVEDATA_API_KEY_2" "$TWELVEDATA_API_KEY_3" "$TWELVEDATA_API_KEY_4")
+          configured=0
+          for key in "${keys[@]}"; do
+            [ -n "$key" ] || continue
+            configured=$((configured + 1))
+            response_file="$(mktemp)"
+            status="$(curl --connect-timeout 10 --max-time 20 --silent --show-error --output "$response_file" --write-out '%{http_code}' --get 'https://api.twelvedata.com/price' --data-urlencode 'symbol=EUR/USD' --data-urlencode "apikey=$key" || true)"
+            if [ "$status" = "200" ] && node -e '
+              const fs = require("node:fs");
+              try { const d=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.exit(typeof d.price === "string" && Number.isFinite(Number(d.price)) && Number(d.price) > 0 ? 0 : 1); }
               catch { process.exit(1); }
-            });
-          '; then
-            echo "::error::Twelve Data verification failed. Check the key, provider access, and API quota. The key was not printed."
-            exit 1
+            ' "$response_file"; then
+              rm -f "$response_file"
+              echo "OK: a configured Twelve Data key returned a valid EUR/USD price."
+              exit 0
+            fi
+            rm -f "$response_file"
+            if [ "$status" = "429" ]; then
+              echo "::error::Twelve Data returned HTTP 429 (quota/rate limit). Verification stops here; key fallback must not be used to bypass provider limits."
+              exit 1
+            fi
+            if [ "$status" != "401" ] && [ "$status" != "403" ]; then
+              echo "::error::Twelve Data connectivity/response check failed (HTTP ${status:-unknown}). Check provider availability and account access. No key was printed."
+              exit 1
+            fi
+            echo "Notice: a configured Twelve Data key was rejected (HTTP $status); checking the next configured key without printing it."
+          done
+          if [ "$configured" -eq 0 ]; then
+            echo "::error::No Twelve Data API keys are configured."
+          else
+            echo "::error::All configured Twelve Data keys were rejected. Update the invalid/revoked keys in GitHub Actions secrets."
           fi
-          echo "OK: Twelve Data returned a valid EUR/USD price."
+          exit 1
       - name: Start full VORTEX engine only when requested
         if: inputs.action == 'start'
         env:
