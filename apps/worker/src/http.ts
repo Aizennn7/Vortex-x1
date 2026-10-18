@@ -26,6 +26,7 @@ import {
   acknowledgeAlert,
   signalCounts,
   listRequestLog,
+  deliveryStats,
   deleteKey,
   ensureAccount,
   getAccount,
@@ -61,7 +62,7 @@ import {
   workerStatus,
   type SqlClient,
 } from '@vortex/db';
-import { modelRegistrySummary, performanceOverview, summarizeScan } from './services/registry.js';
+import { deliveryTotal, modelRegistrySummary, performanceOverview, summarizeScan } from './services/registry.js';
 import type { WorkerRuntime } from './runtime.js';
 import { runIngestionCycle } from './jobs/ingest.js';
 import { runSignalCycle } from './jobs/signals.js';
@@ -165,6 +166,7 @@ const ADMIN_ROUTES: [string, string, (ctx: RouteContext) => Promise<unknown>][] 
 
 export function createRelay(runtime: WorkerRuntime): Server {
   const buckets = new Map<string, { count: number; resetAt: number }>();
+  const adminFailures = new Map<string, { count: number; resetAt: number }>();
 
   const server = createServer(async (req, res) => {
     const started = Date.now();
@@ -188,8 +190,11 @@ export function createRelay(runtime: WorkerRuntime): Server {
 
     try {
       const isAdmin = url.pathname.startsWith('/admin');
-      if (isAdmin) requireAdmin(runtime, req);
-      else rateLimit(buckets, ip, 300);
+      // Both planes are rate limited, on separate per-IP buckets so a
+      // flood of cheap public requests cannot exhaust the admin
+      // allowance (and vice versa).
+      rateLimit(buckets, `${ip}:${isAdmin ? 'admin' : 'public'}`, isAdmin ? ADMIN_RATE_LIMIT_PER_MINUTE : PUBLIC_RATE_LIMIT_PER_MINUTE);
+      if (isAdmin) requireAdmin(runtime, req, ip, adminFailures);
 
       const body = await readBody(req);
       const match = matchRoute(isAdmin ? ADMIN_ROUTES : PUBLIC_ROUTES, req.method ?? 'GET', url.pathname);
@@ -202,7 +207,9 @@ export function createRelay(runtime: WorkerRuntime): Server {
       const httpError =
         error instanceof HttpError
           ? error
-          : new HttpError(500, 'internal_error', (error as Error).message);
+          // Driver/DB error text can contain connection internals; it is
+          // logged server-side below and never echoed to the caller.
+          : new HttpError(500, 'internal_error', 'Internal error — the worker logged the details.');
       if (httpError.status >= 500) {
         runtime.logger.error('relay request failed', {
           component: 'relay',
@@ -251,7 +258,18 @@ function matchPath(pattern: string, pathname: string): Record<string, string> | 
   return params;
 }
 
-function requireAdmin(runtime: WorkerRuntime, req: IncomingMessage): void {
+/**
+ * Failed admin authorizations are counted per IP: after
+ * ADMIN_FAILURE_LIMIT failures inside the window the admin plane
+ * answers 429 for that IP until the window resets. Constant-time
+ * comparison stops timing attacks; this stops volume attacks.
+ */
+function requireAdmin(
+  runtime: WorkerRuntime,
+  req: IncomingMessage,
+  ip: string,
+  failures: Map<string, { count: number; resetAt: number }>,
+): void {
   const token = runtime.config.adminToken;
   if (token.length < 16) {
     throw new HttpError(
@@ -260,12 +278,25 @@ function requireAdmin(runtime: WorkerRuntime, req: IncomingMessage): void {
       'VORTEX_ADMIN_TOKEN is not configured, so the privileged control plane is closed. Set it on the server to enable admin routes.',
     );
   }
+  const now = Date.now();
+  const lockout = failures.get(ip);
+  if (lockout && lockout.count >= ADMIN_FAILURE_LIMIT && now <= lockout.resetAt) {
+    throw new HttpError(429, 'rate_limited', 'Too many failed authorizations — try again later.');
+  }
   const header = req.headers.authorization ?? '';
   const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (provided.length === 0 || !safeEqual(provided, token)) {
+    const entry = failures.get(ip);
+    if (!entry || now > entry.resetAt) failures.set(ip, { count: 1, resetAt: now + ADMIN_FAILURE_WINDOW_MS });
+    else entry.count += 1;
     throw new HttpError(401, 'unauthorized', 'A valid admin bearer token is required for this route.');
   }
 }
+
+const PUBLIC_RATE_LIMIT_PER_MINUTE = 300;
+const ADMIN_RATE_LIMIT_PER_MINUTE = 300;
+const ADMIN_FAILURE_LIMIT = 10;
+const ADMIN_FAILURE_WINDOW_MS = 60_000;
 
 function rateLimit(buckets: Map<string, { count: number; resetAt: number }>, ip: string, perMinute: number): void {
   const now = Date.now();
@@ -435,7 +466,7 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     };
   }
   const client = db(runtime);
-  const [workers, lastJob, lastJobs, rawQuality, budget, counts, deliveries, alerts, components, registry] =
+  const [workers, lastJob, lastJobs, rawQuality, budget, counts, deliveryTotals, alerts, components, registry] =
     await Promise.all([
     workerStatus(client),
     lastSuccessfulJob(client),
@@ -443,7 +474,7 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
     listQuality(client),
     runtime.keyPool.usageSnapshots(),
     signalCounts(client),
-    listDeliveries(client, 50),
+    deliveryStats(client),
     listAlerts(client, false, 20),
     healthSnapshot(runtime),
     modelRegistrySummary(client),
@@ -523,12 +554,13 @@ async function summaryRoute(ctx: RouteContext): Promise<unknown> {
       accuracy: decisive === 0 ? null : Number((((counts.WIN ?? 0) / decisive) * 100).toFixed(2)),
       note: 'Accuracy uses decisive outcomes only; unresolved records are reported separately and never counted as wins.',
     },
-    telegram: {
-      configuration: runtime.telegram.configuration(),
-      sent: deliveries.filter((d) => d.status === 'SENT').length,
-      failed: deliveries.filter((d) => d.status === 'FAILED').length,
-      unconfirmed: deliveries.filter((d) => d.status === 'UNKNOWN').length,
-    },
+      telegram: {
+        configuration: runtime.telegram.configuration(),
+        // True ledger totals, not a sample of the most recent rows.
+        sent: deliveryTotal(deliveryTotals, 'SENT'),
+        failed: deliveryTotal(deliveryTotals, 'FAILED'),
+        unconfirmed: deliveryTotal(deliveryTotals, 'UNKNOWN'),
+      },
     components,
     model: registry.model,
     learning: registry.learning,
@@ -1034,7 +1066,7 @@ async function logsRoute(ctx: RouteContext): Promise<unknown> {
     events: await listLogEvents(db(ctx.runtime), {
       level: ctx.url.searchParams.get('level') ?? undefined,
       component: ctx.url.searchParams.get('component') ?? undefined,
-      limit: Math.min(Number(ctx.url.searchParams.get('limit') ?? 200), 1000),
+      limit: boundedInt(ctx.url.searchParams.get('limit'), 'limit', 200, 1000),
     }),
   };
 }
