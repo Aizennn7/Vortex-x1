@@ -222,7 +222,13 @@ export class KeyPool {
         });
       } catch (error) {
         if (error instanceof QuotaExceededError) {
-          await updateKey(this.db, key.stored.id, { status: 'EXHAUSTED' });
+          // The usage bucket can roll over before anyone reacts, so
+          // also cool the key down for the configured grace period —
+          // that is what VORTEX_PROVIDER_QUOTA_GRACE_SECONDS is for.
+          await updateKey(this.db, key.stored.id, {
+            status: 'EXHAUSTED',
+            cooldownUntil: new Date(Date.now() + this.runtime.config.quotaGraceSeconds * 1000).toISOString(),
+          });
           this.runtime.invalidateKeyCache();
           this.cache = null;
           lastError = error.message;
