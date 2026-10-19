@@ -184,24 +184,12 @@ export async function runSignalCycle(runtime: WorkerRuntime, now = new Date()): 
 
     // Publish immediately: the lead time is exactly one minute, so waiting is
     // not an option and would break the promised pre-entry delivery.
-    const deliveries = runtime.telegram.enabled
-      ? await runtime.telegram.deliverSignal(record, 'PUBLISH')
-      : [{ channelLabel: 'none', status: 'SKIPPED' as const, detail: 'Telegram delivery disabled' }];
-    const confirmed = deliveries.some((d) => d.status === 'SENT');
+    // Signals are published directly into the VORTEX database and shown in the
+    // in-app Signals workspace. No external messaging service is used.
     await markPublished(db, [record.id], toIso(now));
     summary.detail.push(
-      `${record.pair} ${record.direction} @${record.confidence.toFixed(2)} → entry ${plan.entryTime}` +
-        (confirmed ? ' · Telegram confirmed' : ` · Telegram: ${deliveries.map((d) => d.status).join('/')}`),
+      `${record.pair} ${record.direction} @${record.confidence.toFixed(2)} → entry ${plan.entryTime} · available in VORTEX Signals`,
     );
-    if (!confirmed && runtime.telegram.enabled) {
-      await raiseAlert(db, {
-        severity: 'WARNING',
-        code: 'telegram-delivery-failed',
-        title: 'Telegram delivery not confirmed for a published signal',
-        detail: deliveries.map((d) => `${d.channelLabel}: ${d.status} — ${d.detail}`).join('; '),
-        metadata: { signalId: record.id, pair: record.pair },
-      }).catch(() => undefined);
-    }
   }
 
   return summary;
