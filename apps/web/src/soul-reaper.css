@@ -1,0 +1,106 @@
+/* VORTEX: SOUL REAPER MODE — shared monochrome redesign.
+   Presentation-only; no API, strategy, or signal qualification behavior changes. */
+:root{
+ color-scheme:dark;
+ --bg:#050505;--panel:rgba(13,13,13,.72);--panel-edge:rgba(255,255,255,.19);
+ --text:#f6f6f6;--muted:#b7b7b7;--accent:#fff;--good:#d7d7d7;--bad:#999;--warn:#c9c9c9;
+ font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+html{background:#050505;color-scheme:dark}
+body{
+ color:#f5f5f5!important;
+ background:
+  radial-gradient(ellipse at 75% 0%,rgba(255,255,255,.09),transparent 34rem),
+  radial-gradient(ellipse at 8% 45%,rgba(255,255,255,.045),transparent 36rem),
+  repeating-linear-gradient(128deg,transparent 0 84px,rgba(255,255,255,.018) 85px,transparent 87px 150px),
+  #050505!important;
+}
+body::before{
+ content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.23;
+ background-image:radial-gradient(#fff 0.65px,transparent .8px),radial-gradient(#fff .5px,transparent .8px);
+ background-size:7px 7px,13px 13px;background-position:0 0,3px 4px;
+ mask-image:linear-gradient(115deg,#000 0%,transparent 52%,#000 100%);
+}
+h1,h2,h3,strong{color:#fff}
+h1{letter-spacing:.11em}
+a{color:#f2f2f2;text-underline-offset:4px}
+button,.primary-link{
+ color:#090909!important;background:linear-gradient(135deg,#fff,#bdbdbd)!important;
+ border:1px solid rgba(255,255,255,.75)!important;border-radius:9px!important;
+ font-weight:800;box-shadow:0 7px 26px #0009,inset 0 1px #fff!important;
+}
+button:hover:not(:disabled),.primary-link:hover{filter:brightness(1.12);transform:translateY(-1px)}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #fff!important;outline-offset:3px}
+.page-layout,main{max-width:1600px}
+.page-shell,.nexus-shell{gap:14px}
+.page-sidebar,.nexus-sidebar{
+ background:rgba(5,5,5,.88)!important;border:1px solid #ffffff24!important;border-radius:8px!important;
+ box-shadow:0 20px 55px #000b,inset 0 1px #ffffff12!important;backdrop-filter:blur(22px) saturate(50%);
+}
+.page-sidebar .nexus-brand-mark{background:#f5f5f5!important;color:#050505!important;border-radius:50%!important}
+.page-sidebar nav a,.workspace-nav a{color:#d4d4d4!important;border-radius:7px!important}
+.page-sidebar nav a[aria-current=page],.page-sidebar nav a:hover,.workspace-nav a:hover{
+ background:#ffffff12!important;border:1px solid #ffffff2c!important;color:#fff!important
+}
+.page-content,.nexus-workspace{min-width:0}
+.page-heading{border-bottom:1px solid #ffffff26;padding-bottom:12px}
+.page-heading h1{font-size:clamp(1.6rem,3.4vw,2.8rem);font-weight:900;text-transform:uppercase}
+.page-heading p,.page-note,.muted{color:#b9b9b9!important}
+.workspace-card,.card,.feature-card,.panel,.metric-card,.table-wrap,.settings-workspace,.signal-tools,.signal-admin-access{
+ background:linear-gradient(145deg,rgba(31,31,31,.78),rgba(5,5,5,.84))!important;
+ border:1px solid #ffffff2b!important;border-radius:9px!important;
+ box-shadow:0 18px 55px #0008,inset 0 1px #ffffff16!important;
+ backdrop-filter:blur(20px) saturate(30%);-webkit-backdrop-filter:blur(20px) saturate(30%);
+}
+.workspace-card h2,.card h2,.feature-card h2{letter-spacing:.04em}
+input,select,textarea,.workspace-card input,.workspace-card select,.workspace-card textarea{
+ background:rgba(0,0,0,.78)!important;color:#fff!important;border:1px solid #ffffff35!important;border-radius:6px!important;
+}
+input::placeholder,textarea::placeholder{color:#999}
+table{color:#eee}th{color:#d7d7d7!important;background:#ffffff09}td,th{border-bottom-color:#ffffff20!important}
+tbody tr:hover{background:#ffffff0a}
+.badge,.signal-status,.signal-result{border-radius:4px!important}
+.badge-connected,.badge-ok,.badge-degraded,.badge-not-verified,.badge-configuration-required,.badge-idle,.badge-rate-limited,.badge-disconnected{color:#eee!important}
+.cosmic-hero{
+ min-height:330px;border:1px solid #ffffff32!important;border-radius:8px!important;overflow:hidden;
+ background:
+  radial-gradient(ellipse at 82% 30%,#fff1,transparent 30%),
+  repeating-linear-gradient(135deg,transparent 0 20px,#ffffff08 21px,transparent 22px 42px),
+  linear-gradient(120deg,#050505f5,#242424b8 70%,#080808d9)!important;
+ box-shadow:0 30px 80px #000c,inset 0 1px #ffffff20!important;
+}
+.cosmic-hero::before{
+ content:"";position:absolute;inset:0;pointer-events:none;opacity:.3;
+ background:radial-gradient(circle at 20% 30%,#fff 0 1px,transparent 2px),radial-gradient(circle at 70% 60%,#fff 0 1px,transparent 2px);
+ background-size:17px 17px,23px 23px;mask-image:linear-gradient(90deg,#000,transparent 68%);
+}
+.cosmic-hero::after{background:linear-gradient(90deg,#050505a8,transparent 80%)!important}
+.cosmic-hero h2{font-weight:950;text-transform:uppercase;letter-spacing:-.035em}
+.cosmic-hero h2 em,.feature-card h2 em,.section-heading h2 em,.eyebrow,.feature-kicker{color:#ddd!important}
+.planet-art{filter:grayscale(1) contrast(1.35)!important;opacity:.72}
+.planet{background:radial-gradient(circle at 30% 25%,#fff,transparent 8%),radial-gradient(ellipse at 35% 31%,#aaa 0%,#555 30%,#1b1b1b 60%,#000 78%)!important;box-shadow:inset -28px -14px 45px #000d,0 0 65px #fff2!important}
+.planet-ring{border-color:#fff7!important}.orbit-dot,.blossom{color:#fff!important;background:#fff!important;box-shadow:0 0 15px #fff5!important}
+.stat-value,.signal-confidence strong{color:#fff!important}
+.signal-card{background:linear-gradient(145deg,#252525d9,#050505ed)!important;border-color:#ffffff40!important;border-radius:8px!important}
+.signal-eyebrow,.signal-confidence span,.signal-detail-grid span{color:#c8c8c8!important}
+.signal-detail-grid>div{background:#0008!important;border-color:#ffffff19!important}
+.signal-detail-grid strong{color:#fff!important}
+.signal-empty{color:#ddd!important;border-color:#ffffff4a!important}
+.ai-operator-launch{background:linear-gradient(135deg,#fff,#bbb)!important;color:#000!important}
+.ai-operator-panel{background:#090909f5!important;border:1px solid #ffffff40!important;border-radius:8px!important}
+.ai-message-user{background:#ffffff14!important}
+::selection{background:#fff;color:#000}
+@media(max-width:850px){
+ .page-shell,.nexus-shell{grid-template-columns:1fr!important}
+ .page-sidebar{position:relative;top:auto}
+ .page-sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .cosmic-hero{min-height:270px}
+ .planet-art{opacity:.35!important}
+}
+@media(max-width:560px){
+ .page-layout{padding:.65rem!important}
+ .workspace-card{padding:14px!important}
+ .page-sidebar nav a{padding:.6rem!important;font-size:.8rem}
+ .cosmic-hero{min-height:245px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
