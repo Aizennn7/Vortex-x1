@@ -1142,29 +1142,31 @@ async function operatorCommandRunRoute(ctx: RouteContext): Promise<unknown> {
 }
 
 async function operatorMcpToolsRoute(ctx: RouteContext): Promise<unknown> {
-  const result = await discoverMcpTools(ctx.params.id);
+  const serverId = requireString(ctx.params.id, 'id');
+  const result = await discoverMcpTools(serverId);
   await recordAudit(db(ctx.runtime), {
     actor: `admin:${ctx.ip}`,
     action: 'operator.mcp.tools_list',
-    target: ctx.params.id,
+    target: serverId,
     detail: { count: result.tools.length },
   });
   return result;
 }
 
 async function operatorMcpCallRoute(ctx: RouteContext): Promise<unknown> {
+  const serverId = requireString(ctx.params.id, 'id');
   const body = asObject(ctx.body);
   const toolName = requireString(body.toolName, 'toolName', 1);
   if (toolName.length > 100) throw new HttpError(400, 'validation_error', 'toolName is too long.');
   const args = body.arguments ?? {};
-  const result = await callReadOnlyMcpTool(ctx.params.id, toolName, args);
+  const result = await callReadOnlyMcpTool(serverId, toolName, args);
   await recordAudit(db(ctx.runtime), {
     actor: `admin:${ctx.ip}`,
     action: 'operator.mcp.tool_call',
-    target: `${ctx.params.id}:${toolName}`,
+    target: `${serverId}:${toolName}`,
     detail: { argumentKeys: args && typeof args === 'object' && !Array.isArray(args) ? Object.keys(args as Record<string, unknown>).slice(0, 30) : [] },
   });
-  return { server: ctx.params.id, toolName, result };
+  return { server: serverId, toolName, result };
 }
 
 async function providerRoute(ctx: RouteContext): Promise<unknown> {
