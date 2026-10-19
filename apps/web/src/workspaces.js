@@ -6,7 +6,7 @@ const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
 const pages = [
   ['index.html','Overview'],['signals.html','Signals'],['markets.html','Markets'],['learning.html','AI Learning'],
   ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','Delivery'],
-  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['operator.html','AI Operator'],
+  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['integrations.html','Plugins & MCP'],['operator.html','AI Operator'],
 ];
 const page = location.pathname.split('/').pop() || 'index.html';
 const current = pages.find(([file]) => file === page)?.[1] || 'Overview';
@@ -15,11 +15,12 @@ const nav = () => `<aside class="page-sidebar"><a class="nexus-brand" href="./in
 const operatorMarkup = () => `
   <button class="ai-operator-launch" id="ai-operator-launch" type="button" aria-controls="ai-operator-panel" aria-expanded="false"><span aria-hidden="true">✳</span> AI Operator</button>
   <section class="ai-operator-panel" id="ai-operator-panel" aria-label="VORTEX AI Operator" hidden>
-    <header class="ai-operator-header"><div><p class="eyebrow">LOCAL MODEL BRIDGE</p><h2>VORTEX AI Operator</h2><p class="page-note">Advice and read-only diagnostics. It cannot execute commands or change production settings.</p></div><button type="button" id="ai-operator-close" aria-label="Close AI Operator">×</button></header>
+    <header class="ai-operator-header"><div><p class="eyebrow">LOCAL MODEL BRIDGE</p><h2>VORTEX AI Operator</h2><p class="page-note">Advisory by default. With a backend token, it may request explicitly allowlisted read-only tools; each call requires your confirmation.</p></div><button type="button" id="ai-operator-close" aria-label="Close AI Operator">×</button></header>
     <div class="ai-operator-config">
       <label>OpenAI-compatible endpoint<input id="ai-operator-endpoint" type="url" inputmode="url" placeholder="Local inference endpoint URL" autocomplete="url"></label>
       <label>Model name<input id="ai-operator-model" value="Qwen3-4B-Q4" autocomplete="off"></label>
-      <p class="page-note">Endpoint must be HTTPS or loopback. Your prompt and selected read-only status context are sent to this endpoint. Do not enter secrets.</p>
+      <label>Backend admin token (optional; memory only)<input id="ai-operator-admin-token" type="password" autocomplete="off" placeholder="Enable allowlisted tools for this session"></label>
+      <p class="page-note">Endpoint must be HTTPS or loopback. Prompts go to this model endpoint. The admin token is never saved; when supplied, only backend-allowlisted read-only commands/tools are offered and every call requires your confirmation.</p>
     </div>
     <div class="ai-operator-messages" id="ai-operator-messages" role="log" aria-live="polite"><div class="ai-message ai-message-system">Connect a local OpenAI-compatible inference server, then ask about VORTEX status, signal workflows, or debugging. Model output is treated as advice, never as executable instructions.</div></div>
     <div class="ai-operator-actions"><button type="button" id="ai-operator-inspect">Inspect VORTEX status</button><label class="ai-context-toggle"><input id="ai-operator-context" type="checkbox" checked> Include read-only status context</label></div>
@@ -32,8 +33,8 @@ const status = (msg, cls='') => `<div class="page-status ${cls}" role="status">$
 async function api(path, opts={}) {
   const response = await fetch((base || '')+path, { ...opts, headers: { 'Content-Type':'application/json', ...(opts.token ? {Authorization:'Bearer '+opts.token}:{}), ...(opts.headers||{}) } });
   const text = await response.text(); let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {message:text}; }
-  if (!response.ok) throw new Error(data.message || data.error || ('HTTP '+response.status));
-  return data;
+  if (!response.ok) throw new Error(data.error?.message || data.message || data.error || ('HTTP '+response.status));
+  return data?.ok === true && Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data;
 }
 function utc(value) { if(!value) return '—'; const d=new Date(value); return Number.isNaN(d.getTime())?esc(value):d.toISOString().replace('T',' ').replace('.000Z',' UTC').replace('Z',' UTC'); }
 
@@ -64,22 +65,73 @@ function initAiOperator() {
   try{const context=await inspect();addMessage('system','Read-only VORTEX snapshot:\n'+JSON.stringify(context,null,2));statusEl.textContent='Snapshot loaded. No commands were executed.';}
   catch(e){statusEl.textContent='Inspection failed: '+String(e?.message||e);}finally{button.disabled=false;}
  });
+ async function loadToolCatalog(token){
+  if(!token)return {tools:[],byName:{}};
+  const tools=[],byName={};
+  const commandData=await api('/admin/operator/commands',{token});
+  for(const command of commandData.commands||[]){
+   const name='vortex_'+String(command.id).replace(/[^a-zA-Z0-9_]/g,'_');
+   const def={type:'function',function:{name,description:command.label+' (read-only VORTEX command)',parameters:{type:'object',properties:{},additionalProperties:false}}};
+   tools.push(def);byName[name]={kind:'command',id:command.id,label:command.label};
+  }
+  const pluginData=await api('/admin/operator/plugins',{token});
+  for(const server of (pluginData.mcpServers||[]).filter(item=>item.enabled)){
+   try{
+    const discovered=await api('/admin/operator/mcp/'+encodeURIComponent(server.id)+'/tools',{token});
+    const allowed=new Set(discovered.allowedReadOnlyTools||[]);
+    for(const tool of (discovered.tools||[]).filter(item=>allowed.has(item.name))){
+     const name=('mcp_'+server.id+'_'+tool.name).replace(/[^a-zA-Z0-9_]/g,'_').slice(0,64);
+     const parameters=tool.inputSchema&&typeof tool.inputSchema==='object'?tool.inputSchema:{type:'object',properties:{}};
+     tools.push({type:'function',function:{name,description:(server.name+': '+(tool.description||tool.name)+' (server-allowlisted read-only tool)').slice(0,900),parameters}});
+     byName[name]={kind:'mcp',serverId:server.id,toolName:tool.name,label:server.name+': '+tool.name};
+    }
+   }catch(error){addMessage('system','Skipped MCP server '+server.id+': '+String(error?.message||error));}
+  }
+  return {tools,byName};
+ }
+ async function executeOperatorTool(token,descriptor,args){
+  if(descriptor.kind==='command')return api('/admin/operator/commands/'+encodeURIComponent(descriptor.id)+'/run',{method:'POST',body:'{}',token});
+  if(descriptor.kind==='mcp')return api('/admin/operator/mcp/'+encodeURIComponent(descriptor.serverId)+'/call',{method:'POST',body:JSON.stringify({toolName:descriptor.toolName,arguments:args}),token});
+  throw new Error('Tool is not allowlisted.');
+ }
  form.addEventListener('submit',async(event)=>{
-  event.preventDefault();const text=prompt.value.trim();if(!text)return;
-  const url=endpoint.value.trim(), modelName=model.value.trim();if(!url||!modelName){statusEl.textContent='Enter an inference endpoint and model name first.';return;}
+  event.preventDefault();const userText=prompt.value.trim();if(!userText)return;
+  const url=endpoint.value.trim(), modelName=model.value.trim(), adminToken=document.getElementById('ai-operator-admin-token').value.trim();
+  if(!url||!modelName){statusEl.textContent='Enter an inference endpoint and model name first.';return;}
   let parsed;try{parsed=new URL(url);}catch{statusEl.textContent='Endpoint URL is invalid.';return;}
-  const loopback=['local'+'host',['127','0','0','1'].join('.'),'['+'::1'+']'].includes(parsed.hostname);
+  const loopback=['localhost',['127','0','0','1'].join('.'),'['+'::1'+']'].includes(parsed.hostname);
   if(parsed.protocol!=='https:'&&!(parsed.protocol==='http:'&&loopback)){statusEl.textContent='For safety, use HTTPS or a loopback endpoint only. Never expose a local model port to the public internet.';return;}
-  const send=document.getElementById('ai-operator-send');send.disabled=true;prompt.value='';addMessage('user',text);statusEl.textContent='Connecting to model…';
+  const send=document.getElementById('ai-operator-send');send.disabled=true;prompt.value='';addMessage('user',userText);statusEl.textContent='Connecting to model…';
   try{
    const context=document.getElementById('ai-operator-context').checked?await inspect():{contextIncluded:false};
-   const system='You are the VORTEX SI AI Operator. Help diagnose, explain and plan changes across the dashboard, signals, market-data ingestion, learning, and CI workflows. You may propose commands or code changes, but you cannot execute tools, run commands, change settings, access secrets, or claim an action happened. Use only the supplied read-only context; distinguish unknown from healthy and never invent data. For code/workflow changes, provide a reviewed plan and recommend a GitHub pull request. Market signals are informational, not financial advice. Current read-only context: '+JSON.stringify(context);
-   const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:modelName,stream:false,messages:[{role:'system',content:system},{role:'user',content:text}]})});
-   const raw=await response.text();let data;try{data=raw?JSON.parse(raw):{};}catch{data={};}
-   if(!response.ok)throw new Error(data.error?.message||data.message||('HTTP '+response.status+' — check endpoint, CORS and model name'));
-   const answer=data.choices?.[0]?.message?.content||data.message?.content||data.response;
-   if(typeof answer!=='string'||!answer.trim())throw new Error('The endpoint returned no assistant text. Confirm it supports OpenAI-compatible /v1/chat/completions responses.');
-   addMessage('assistant',answer.trim());statusEl.textContent='Reply received. This model is advisory only; no system action was executed.';
+   const catalog=adminToken?await loadToolCatalog(adminToken):{tools:[],byName:{}};
+   if(adminToken&&!catalog.tools.length)addMessage('system','No allowlisted tools are available; continuing in advisory-only mode.');
+   const system='You are the VORTEX SI AI Operator. Help diagnose, explain and plan changes across the dashboard, signals, market-data ingestion, learning, and CI workflows. Use only supplied read-only context and the explicitly provided allowlisted tools. Never invent data, expose secrets, or claim an action succeeded without its tool result. Each requested tool call is shown to the user for confirmation before execution. Do not attempt writes, trading, deployments, merges, shell commands, or actions not represented by a supplied tool. Distinguish unknown from healthy. Market signals are informational, not financial advice. Current read-only context: '+JSON.stringify(context);
+   const messages=[{role:'system',content:system},{role:'user',content:userText}];
+   let finalAnswer='';
+   for(let round=0;round<4;round++){
+    const body={model:modelName,stream:false,messages,...(catalog.tools.length?{tools:catalog.tools,tool_choice:'auto'}:{})};
+    const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const raw=await response.text();let data;try{data=raw?JSON.parse(raw):{};}catch{data={};}
+    if(!response.ok)throw new Error(data.error?.message||data.message||('HTTP '+response.status+' — check endpoint, CORS and model name'));
+    const message=data.choices?.[0]?.message;
+    if(!message)throw new Error('The endpoint returned no assistant message. Confirm it supports OpenAI-compatible chat completions.');
+    const calls=Array.isArray(message.tool_calls)?message.tool_calls:[];
+    if(!calls.length){finalAnswer=typeof message.content==='string'?message.content.trim():'';break;}
+    messages.push(message);
+    for(const call of calls){
+     const fn=call.function||{}, descriptor=catalog.byName[fn.name];
+     let args={};try{args=typeof fn.arguments==='string'?JSON.parse(fn.arguments||'{}'):(fn.arguments||{});}catch{args={__invalidJson:true};}
+     let result;
+     if(!descriptor)result={ok:false,error:'Tool is not in the current allowlist.'};
+     else if(args.__invalidJson||!args||typeof args!=='object'||Array.isArray(args))result={ok:false,error:'Tool arguments must be a valid JSON object.'};
+     else if(!confirm('The model requests a read-only tool call: '+descriptor.label+'.\n\nArguments:\n'+JSON.stringify(args,null,2)+'\n\nAllow this single call?'))result={cancelled:true,note:'User declined this tool call.'};
+     else {statusEl.textContent='Executing confirmed read-only tool: '+descriptor.label;try{result=await executeOperatorTool(adminToken,descriptor,args);}catch(error){result={ok:false,error:String(error?.message||error)};}}
+     messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
+    }
+   }
+   if(!finalAnswer)finalAnswer='The model did not provide a final text answer within the tool-call limit. Review the tool results above and ask a follow-up.';
+   addMessage('assistant',finalAnswer);statusEl.textContent=catalog.tools.length?'Reply received. Only individually confirmed, allowlisted read-only tools could execute.':'Reply received in advisory-only mode; no tools were available.';
   }catch(e){statusEl.textContent='Model request failed: '+String(e?.message||e)+'. On a hosted HTTPS site, browser CORS / mixed-content rules may block phone-local HTTP servers.';}
   finally{send.disabled=false;prompt.focus();}
  });
@@ -161,6 +213,69 @@ async function marketsPage(){
 async function overviewPage(){layout('Overview','Your VORTEX command centre. Each workspace has its own page; no long single-page dashboard.',`<section class="cosmic-hero"><div class="hero-copy"><p class="eyebrow">VORTEX SIGNAL INTELLIGENCE</p><h2>Predict the market.<br><em>Learn. Adapt. Evolve.</em></h2><p class="hero-description">Signals, system health, secure data configuration, and operating instructions — organized into separate workspaces.</p><div class="hero-actions"><a class="primary-link" href="./signals.html">Open Signals ↗</a><a class="quiet-link" href="./instructions.html">Instructions</a></div><p class="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p></div><div class="planet-art" aria-hidden="true"><div class="planet-ring"></div><div class="planet"></div><span class="orbit-dot"></span></div></section><div class="feature-grid"><article class="feature-card"><h2>Signals</h2><p class="feature-lede">Pair, direction, open time, timeframe, entry, expiry, status and result in a dedicated registry.</p><a class="primary-link" href="./signals.html">View signals ↗</a></article><article class="feature-card"><h2>Secrets & Data</h2><p class="feature-lede">Secure provider-key entry connected to the authenticated worker API.</p><a class="primary-link" href="./secrets.html">Manage keys ↗</a></article><article class="feature-card"><h2>Instructions</h2><p class="feature-lede">Clear setup, operating and troubleshooting steps.</p><a class="primary-link" href="./instructions.html">Read instructions ↗</a></article></div>`);}
 async function genericPage(title,desc,path,headers){layout(title,desc,card(title,`<div id="generic-status">${status('Connecting…')}</div><div class="table-scroll"><table><thead><tr>${headers.map(h=>'<th>'+esc(h)+'</th>').join('')}</tr></thead><tbody id="generic-body"></tbody></table></div><button id="generic-refresh">Refresh</button>`));const load=async()=>{try{const d=await api(path);const key=Object.keys(d).find(k=>Array.isArray(d[k]));const rows=key?d[key]:Array.isArray(d)?d:[];document.getElementById('generic-status').innerHTML=status(rows.length+' records read from API.','success');document.getElementById('generic-body').innerHTML=rows.length?rows.map(r=>'<tr>'+headers.map(h=>'<td>'+esc(r[h]??r[h.replace(/ /g,'')]??'—')+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+headers.length+'">No records returned. This is not filled with demo data.</td></tr>';}catch(e){document.getElementById('generic-status').innerHTML=status('Data unavailable: '+e.message,'error');document.getElementById('generic-body').innerHTML='<tr><td colspan="'+headers.length+'">No placeholder data shown.</td></tr>';}};document.getElementById('generic-refresh').onclick=load;await load();}
 function instructionsPage(){layout('Instructions','A dedicated operating guide for safe configuration and reliable signal review.',card('1 · Configure the private worker',`<ol class="instruction-list"><li>Deploy the VORTEX worker/relay on a private server or trusted host; GitHub Pages is a public static site.</li><li>Configure <code>DATABASE_URL</code> using the Supabase session pooler connection string.</li><li>Set <code>VORTEX_SECRET_KEY</code> (32-byte encryption key), <code>VORTEX_ADMIN_TOKEN</code>, and the provider credential in GitHub Actions / worker environment secrets.</li><li>Apply all migrations in <code>supabase/migrations</code>. The provider key table and public read-only views must exist.</li><li>Set the dashboard relay URL to the worker endpoint. Do not place privileged keys in <code>VITE_*</code> variables.</li></ol>`)+card('2 · Save a provider key',`<ol class="instruction-list"><li>Open Secrets & Data.</li><li>Enter the private worker API URL and its admin bearer token.</li><li>Enter a label and provider API key; optionally select verification.</li><li>Save. The worker encrypts the key before inserting it into the database and returns only a masked representation.</li><li>If you see configuration required, configure <code>VORTEX_SECRET_KEY</code> on the server first.</li></ol><a class="primary-link" href="./secrets.html">Open Secrets & Data ↗</a>`)+card('3 · Read and operate signals',`<ol class="instruction-list"><li>Open Signals to view persisted records. An empty table means no qualifying signal has been published; no sample signal is fabricated.</li><li>Review pair, direction, scheduled open time (UTC), status and outcome. Timeframe, entry price or expiry show only if the engine API returns them.</li><li>Use the repository’s GitHub Actions workflow to request a scan. A workflow run is a one-shot job, not a persistent daemon.</li><li>Do not treat ranking confidence as win probability or informational signals as financial advice.</li></ol><a class="primary-link" href="./signals.html">Open Signals ↗</a>`)+card('4 · Troubleshooting',`<ul class="instruction-list"><li><strong>401/403:</strong> check the admin bearer token and permissions.</li><li><strong>503 encryption configuration:</strong> set <code>VORTEX_SECRET_KEY</code> on the worker.</li><li><strong>Database table missing:</strong> apply migrations before retrying.</li><li><strong>No signals:</strong> inspect market-data freshness, provider quota, scan logs and qualification gates. Never enable synthetic signals to fill the page.</li><li><strong>Browser can’t connect:</strong> verify relay URL, HTTPS, CORS and worker availability.</li></ul>`));}
+async function integrationsPage() {
+ layout('Plugins & MCP','Connect the AI Operator to server-configured integrations. Privileged access is session-only; no token is saved in browser storage.',card('Authenticated backend',`<label>VORTEX admin bearer token (kept only in this page session)<input id="integrations-token" type="password" autocomplete="off" placeholder="Enter VORTEX_ADMIN_TOKEN"></label><p class="page-note">The token is sent only to the configured VORTEX relay over HTTPS. Never paste it into prompts or share it. MCP server URLs and credentials are configured on the backend, not here.</p><button id="integrations-load">Load plugins and commands</button><p id="integrations-status">${status('Enter the backend admin token to load integrations.')}</p>`) +
+ card('Plugin registry',`<div id="integrations-plugins" class="page-note">Not loaded.</div>`) +
+ card('Allowlisted commands',`<label>Read-only command<select id="integrations-command"><option value="">Load commands first</option></select></label><button id="integrations-run-command" disabled>Run selected read-only command</button><pre id="integrations-command-result" class="code-panel">No command run.</pre>`) +
+ card('MCP tools',`<div class="row-fields"><label>Configured server<select id="integrations-server"><option value="">Load plugins first</option></select></label><button id="integrations-discover" disabled>Discover tools</button></div><label>Allowlisted read-only tool<select id="integrations-tool"><option value="">Discover tools first</option></select></label><label>Tool arguments (JSON object)<textarea id="integrations-args" rows="4">{}</textarea></label><button id="integrations-call" disabled>Call selected read-only tool</button><pre id="integrations-tool-result" class="code-panel">No tool call.</pre><p class="page-note">Only tools explicitly allowlisted as read-only by the server administrator can be called. Discovery does not grant permission. Review upstream tool behavior before allowlisting.</p>`));
+ const tokenEl=document.getElementById('integrations-token');
+ const statusEl=document.getElementById('integrations-status');
+ const pluginsEl=document.getElementById('integrations-plugins');
+ const commandSelect=document.getElementById('integrations-command');
+ const serverSelect=document.getElementById('integrations-server');
+ const toolSelect=document.getElementById('integrations-tool');
+ const commandButton=document.getElementById('integrations-run-command');
+ const discoverButton=document.getElementById('integrations-discover');
+ const callButton=document.getElementById('integrations-call');
+ const adminApi=(path,opts={})=>{const token=tokenEl.value.trim();if(!token)throw new Error('Enter the VORTEX admin token first.');return api(path,{...opts,token});};
+ const option=(select,value,label)=>{const el=document.createElement('option');el.value=value;el.textContent=label;select.appendChild(el);};
+ document.getElementById('integrations-load').addEventListener('click',async()=>{
+  statusEl.textContent='Loading backend registry…';
+  try{
+   const [pluginData,commandData]=await Promise.all([adminApi('/admin/operator/plugins'),adminApi('/admin/operator/commands')]);
+   pluginsEl.textContent=JSON.stringify(pluginData,null,2);
+   commandSelect.replaceChildren();option(commandSelect,'','Choose a read-only command');
+   for(const command of commandData.commands||[])option(commandSelect,command.id,command.label+' ('+command.id+')');
+   commandButton.disabled=!(commandData.commands||[]).length;
+   serverSelect.replaceChildren();option(serverSelect,'','Choose a configured MCP server');
+   for(const server of pluginData.mcpServers||[])option(serverSelect,server.id,server.name+' — '+(server.enabled?'enabled':'disabled'));
+   discoverButton.disabled=!(pluginData.mcpServers||[]).some(server=>server.enabled);
+   statusEl.textContent='Loaded '+(pluginData.plugins||[]).length+' plugin descriptors and '+(pluginData.mcpServers||[]).length+' configured MCP servers.';
+  }catch(e){statusEl.textContent='Could not load registry: '+String(e?.message||e);}
+ });
+ commandButton.addEventListener('click',async()=>{
+  const id=commandSelect.value;if(!id)return;
+  if(!confirm('Run '+id+'? This command is allowlisted as read-only.'))return;
+  commandButton.disabled=true;
+  try{const result=await adminApi('/admin/operator/commands/'+encodeURIComponent(id)+'/run',{method:'POST',body:'{}'});document.getElementById('integrations-command-result').textContent=JSON.stringify(result,null,2);}
+  catch(e){document.getElementById('integrations-command-result').textContent='Command failed: '+String(e?.message||e);}
+  finally{commandButton.disabled=false;}
+ });
+ discoverButton.addEventListener('click',async()=>{
+  const id=serverSelect.value;if(!id)return;
+  discoverButton.disabled=true;toolSelect.replaceChildren();option(toolSelect,'','Discovering…');callButton.disabled=true;
+  try{
+   const result=await adminApi('/admin/operator/mcp/'+encodeURIComponent(id)+'/tools');
+   toolSelect.replaceChildren();option(toolSelect,'','Choose an allowlisted read-only tool');
+   const allowed=new Set(result.allowedReadOnlyTools||[]);
+   for(const tool of result.tools||[])if(allowed.has(tool.name))option(toolSelect,tool.name,tool.name+' — allowlisted');
+   document.getElementById('integrations-tool-result').textContent=JSON.stringify({server:result.server,discovered:(result.tools||[]).map(t=>({name:t.name,description:t.description,allowlisted:allowed.has(t.name)})),allowedReadOnlyTools:result.allowedReadOnlyTools||[]},null,2);
+   callButton.disabled=!allowed.size;
+   if(!allowed.size)statusEl.textContent='Tools discovered, but no tool is allowlisted. Review tool descriptions and configure readOnlyTools on the server.';
+  }catch(e){toolSelect.replaceChildren();option(toolSelect,'','Discovery failed');document.getElementById('integrations-tool-result').textContent='Tool discovery failed: '+String(e?.message||e);}
+  finally{discoverButton.disabled=false;}
+ });
+ toolSelect.addEventListener('change',()=>{callButton.disabled=!toolSelect.value;});
+ callButton.addEventListener('click',async()=>{
+  const server=serverSelect.value,toolName=toolSelect.value;if(!server||!toolName)return;
+  let args;try{args=JSON.parse(document.getElementById('integrations-args').value||'{}');if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('Arguments must be a JSON object.');}catch(e){statusEl.textContent='Invalid arguments: '+String(e?.message||e);return;}
+  if(!confirm('Call allowlisted read-only tool '+server+':'+toolName+'?'))return;
+  callButton.disabled=true;
+  try{const result=await adminApi('/admin/operator/mcp/'+encodeURIComponent(server)+'/call',{method:'POST',body:JSON.stringify({toolName,arguments:args})});document.getElementById('integrations-tool-result').textContent=JSON.stringify(result,null,2);}
+  catch(e){document.getElementById('integrations-tool-result').textContent='Tool call failed: '+String(e?.message||e);}
+  finally{callButton.disabled=false;}
+ });
+}
 if(page==='signals.html') void signalsPage();
 else if(page==='secrets.html') void secretsPage();
 else if(page==='instructions.html') instructionsPage();
@@ -169,6 +284,7 @@ else if(page==='learning.html') void genericPage('AI Learning','Recorded learnin
 else if(page==='delivery.html') void genericPage('Delivery','Delivery configuration and current relay status.','/admin/status',['status','service','database']);
 else if(page==='performance.html') void genericPage('Performance','Measured outcomes only; unresolved signals are not counted as wins.','/api/performance',['key','settled','wins','losses','accuracy']);
 else if(page==='system.html') void genericPage('System Health','Health checks from the configured VORTEX worker.','/health',['service','status','version','timestamp']);
-else if(page==='operator.html') layout('AI Operator','A root-level assistant for read-only VORTEX diagnostics and reviewed engineering plans.',card('Local model setup',`<p class="page-note">Open the AI Operator button in the lower corner from any workspace. On Android, a 4B quantized model is a sensible first test with 16 GB RAM, but sustained speed depends on the phone chipset and memory pressure.</p><ol class="instruction-list"><li>Install a trusted Android inference runtime or use Termux with a llama.cpp OpenAI-compatible server.</li><li>Download a Qwen3 4B instruct GGUF in a quantization that fits your device (Q4 is a reasonable starting point).</li><li>Run the server bound to loopback only, not 0.0.0.0, and use its chat-completions endpoint.</li><li>Set the endpoint and exact model identifier in the AI Operator panel.</li><li>Test with “Inspect VORTEX status” and then ask for an explanation. If the browser blocks requests, do not expose the model port publicly; use a trusted same-origin private backend bridge.</li></ol><p class="page-note">This initial integration is intentionally advisory/read-only. It does not execute shell commands, merge PRs, trigger workflows, edit files, or access secret-management endpoints. Those actions need separately authenticated server-side tools, explicit allowlists, audit logs, and confirmation.</p><p><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noreferrer">llama.cpp server documentation ↗</a></p>`));
+else if(page==='operator.html') layout('AI Operator','A root-level assistant for read-only VORTEX diagnostics and reviewed engineering plans.',card('Local model setup',`<p class="page-note">Open the AI Operator button in the lower corner from any workspace. On Android, a 4B quantized model is a sensible first test with 16 GB RAM, but sustained speed depends on the phone chipset and memory pressure.</p><ol class="instruction-list"><li>Install a trusted Android inference runtime or use Termux with a llama.cpp OpenAI-compatible server.</li><li>Download a Qwen3 4B instruct GGUF in a quantization that fits your device (Q4 is a reasonable starting point).</li><li>Run the server bound to loopback only, not 0.0.0.0, and use its chat-completions endpoint.</li><li>Set the endpoint and exact model identifier in the AI Operator panel.</li><li>Test with “Inspect VORTEX status” and then ask for an explanation. If the browser blocks requests, do not expose the model port publicly; use a trusted same-origin private backend bridge.</li></ol><p class="page-note">The model is advisory by default. If you provide the backend admin token for this session, it can request the built-in read-only diagnostics and MCP tools explicitly allowlisted on the server; every tool call requires confirmation. It cannot run shell commands, merge PRs, dispatch workflows, modify files, trade, or access secret-management endpoints. Configure integrations in the <a href="./integrations.html">Plugins &amp; MCP Manager</a>. The backend enforces allowlists and audit logging.</p><p><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noreferrer">llama.cpp server documentation ↗</a></p>`));
+else if(page==='integrations.html') void integrationsPage();
 else if(page==='settings.html') { layout('Settings','Connection state and configuration guidance.',card('Public data connection',`<p class="page-note">The dashboard reads public, secret-free views. Configure <code>VITE_RELAY_URL</code> during deployment to connect to the private worker. Privileged credentials must never be embedded in the public frontend.</p><p id="settings-status">${status('Checking health…')}</p><button id="settings-refresh">Refresh health</button>`));const load=async()=>{try{const d=await api('/health');document.getElementById('settings-status').innerHTML=status('Worker responded: '+(d.status||'reachable')+'. '+(d.note||''),'success')}catch(e){document.getElementById('settings-status').innerHTML=status('Worker health unavailable: '+e.message,'error')}};document.getElementById('settings-refresh').onclick=load;void load();}
 else if(page==='index.html') void overviewPage();
