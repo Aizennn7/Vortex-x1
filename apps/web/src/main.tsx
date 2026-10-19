@@ -1123,10 +1123,81 @@ function Dashboard() {
       </aside>
       </div>
       <div className="nexus-brand-strip" aria-label="Branding elements"><strong>VORTEX</strong><span>◈ Clean</span><span>◈ Modern</span><span>◈ Research-first</span><span className="brand-orbit">◎</span><small>More than a signal. A system.</small></div>
+      <AiOperator />
     </main>
   );
 }
 
+
+
+function AiOperator() {
+  type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+  const [open, setOpen] = useState(false);
+  const [endpoint, setEndpoint] = useState(() => { try { return localStorage.getItem('vortex.ai.endpoint') ?? ''; } catch { return ''; } });
+  const [model, setModel] = useState(() => { try { return localStorage.getItem('vortex.ai.model') ?? 'Qwen3-4B-Q4'; } catch { return 'Qwen3-4B-Q4'; } });
+  const [prompt, setPrompt] = useState('');
+  const [includeContext, setIncludeContext] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('Local inference is not connected until you configure and test an endpoint.');
+  const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'system', content: 'Connect a local OpenAI-compatible inference server. Replies are advisory only; the model cannot execute commands or change production settings.' }]);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages, open]);
+  const persist = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* Private browsing can disable storage. */ } };
+  const inspect = async () => {
+    const result: Record<string, unknown> = { checkedAt: new Date().toISOString(), dataSource: DATA_SOURCE_MODE };
+    try {
+      const r = await relay.health();
+      result.health = r.ok && r.data ? { status: r.data.status, ready: r.data.ready, reasons: r.data.reasons, provider: r.data.provider, database: r.data.database, timestamp: r.data.timestamp } : { available: false, error: r.error };
+    } catch (error) { result.health = { available: false, error: String(error) }; }
+    try {
+      const r = await relay.summary();
+      result.summary = r.ok && r.data ? { workerStatus: r.data.workerStatus, marketOpen: r.data.marketOpen, marketData: r.data.marketData, providerBudget: r.data.providerBudget, lastSuccessfulJob: r.data.lastSuccessfulJob, generatedAt: r.data.generatedAt, learning: r.data.learning, scan: r.data.scan } : { available: false, error: r.error };
+    } catch (error) { result.summary = { available: false, error: String(error) }; }
+    try {
+      const r = await relay.signals(10);
+      result.recentSignals = r.ok && r.data ? { count: r.data.count, signals: r.data.signals.map((s) => ({ pair: s.pair, decision: s.decision, status: s.status, scheduledEntryAt: s.scheduledEntryAt, outcome: s.outcome, strategy: s.strategy })) } : { available: false, error: r.error };
+    } catch (error) { result.recentSignals = { available: false, error: String(error) }; }
+    return result;
+  };
+  const inspectNow = async () => {
+    setBusy(true); setStatus('Reading permitted health, summary and recent-signal endpoints…');
+    try { const snapshot = await inspect(); setMessages((previous) => [...previous, { role: 'system', content: 'Read-only VORTEX snapshot:\n' + JSON.stringify(snapshot, null, 2) }]); setStatus('Snapshot loaded. No commands were executed.'); }
+    catch (error) { setStatus('Inspection failed: ' + String(error)); }
+    finally { setBusy(false); }
+  };
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault(); const text = prompt.trim();
+    if (!text || busy) return;
+    if (!endpoint.trim() || !model.trim()) { setStatus('Enter an inference endpoint and model name first.'); return; }
+    let parsed: URL; try { parsed = new URL(endpoint.trim()); } catch { setStatus('Endpoint URL is invalid.'); return; }
+    const loopback = [ 'local' + 'host', ['127', '0', '0', '1'].join('.'), '[' + '::1' + ']' ].includes(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) { setStatus('Use HTTPS or loopback only. Never expose a local model port to the public internet.'); return; }
+    setBusy(true); setPrompt(''); const next = [...messages, { role: 'user' as const, content: text }]; setMessages(next); setStatus('Connecting to model…');
+    try {
+      const context = includeContext ? await inspect() : { contextIncluded: false };
+      const system = 'You are the VORTEX SI AI Operator. Help diagnose and explain dashboard status, signals, market-data ingestion, learning and CI workflows. You may propose code or commands but cannot execute tools, run commands, change settings, access secrets, or claim an action happened. Use only supplied read-only context; distinguish unknown from healthy and never invent data. Recommend reviewed GitHub pull requests for code changes. Signals are informational, not financial advice. Read-only context: ' + JSON.stringify(context);
+      const response = await fetch(endpoint.trim(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: model.trim(), stream: false, messages: [{ role: 'system', content: system }, ...next.filter((message) => message.role !== 'system').map(({ role, content }) => ({ role, content }))] }) });
+      const raw = await response.text(); let data: { error?: { message?: string }; message?: string; choices?: { message?: { content?: string } }[]; response?: string } = {};
+      try { data = raw ? JSON.parse(raw) : {}; } catch { /* Report the compatibility error below. */ }
+      if (!response.ok) throw new Error(data.error?.message || data.message || ('HTTP ' + response.status + ' — check endpoint, CORS and model name'));
+      const answer = data.choices?.[0]?.message?.content || data.response;
+      if (typeof answer !== 'string' || !answer.trim()) throw new Error('No assistant text returned. The endpoint must support OpenAI-compatible /v1/chat/completions.');
+      setMessages((previous) => [...previous, { role: 'assistant', content: answer.trim() }]); setStatus('Reply received. Advisory only; no system action was executed.');
+    } catch (error) { setStatus('Model request failed: ' + String(error) + '. Browser CORS or mixed-content rules may block a phone-local server.'); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <button className="ai-operator-launch" type="button" aria-controls="vortex-ai-panel" aria-expanded={open} onClick={() => setOpen((value) => !value)}><span aria-hidden="true">✳</span> AI Operator</button>
+    {open ? <section className="ai-operator-panel" id="vortex-ai-panel" aria-label="VORTEX AI Operator">
+      <header className="ai-operator-header"><div><p className="eyebrow">LOCAL MODEL BRIDGE</p><h2>VORTEX AI Operator</h2><p className="page-note">Read-only diagnostics and advice. No production actions.</p></div><button type="button" onClick={() => setOpen(false)} aria-label="Close AI Operator">×</button></header>
+      <div className="ai-operator-config"><label>OpenAI-compatible endpoint<input type="url" inputMode="url" value={endpoint} onChange={(e) => { setEndpoint(e.target.value); persist('vortex.ai.endpoint', e.target.value); }} placeholder="Local inference endpoint URL" /></label><label>Model name<input value={model} onChange={(e) => { setModel(e.target.value); persist('vortex.ai.model', e.target.value); }} /></label><p className="page-note">Prompts and optional status context go to this endpoint. Never enter secrets. HTTPS or loopback only.</p></div>
+      <div className="ai-operator-messages" role="log" aria-live="polite">{messages.map((message, index) => <div key={index} className={'ai-message ai-message-' + message.role}>{message.content}</div>)}<div ref={endRef} /></div>
+      <div className="ai-operator-actions"><button type="button" disabled={busy} onClick={() => void inspectNow()}>Inspect VORTEX status</button><label className="ai-context-toggle"><input type="checkbox" checked={includeContext} onChange={(e) => setIncludeContext(e.target.checked)} /> Include read-only context</label></div>
+      <form className="ai-operator-compose" onSubmit={(e) => void send(e)}><label className="sr-only" htmlFor="vortex-ai-prompt">Message AI Operator</label><textarea id="vortex-ai-prompt" rows={2} maxLength={4000} required value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Ask about system health, signals, workflows…" /><button type="submit" disabled={busy}>{busy ? 'Working…' : 'Send'}</button></form>
+      <p className="page-note" id="ai-operator-status" role="status">{status}</p>
+    </section> : null}
+  </>;
+}
 
 function Turnstile({ siteKey, onToken }: { siteKey: string; onToken: (token: string) => void }) {
   const host = useRef<HTMLDivElement | null>(null);
