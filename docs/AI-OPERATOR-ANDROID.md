@@ -21,7 +21,9 @@ The dashboard runs on HTTPS. Some Android browsers block a phone-local HTTP endp
 - The endpoint and model name are stored in browser local storage; no API key is stored by this UI.
 - Prompts and optional status context are sent to the configured endpoint. Keep it local/trusted and never include passwords, API keys, database URLs, or other secrets in prompts.
 - Status context is restricted to health, summary and recent signal fields. The Operator does not call admin or secret-management endpoints.
-- The model is advisory. It cannot execute shell commands, change production settings, retrain the model, edit files, start GitHub Actions, or merge a pull request.
+- The model is advisory by default. If an operator supplies the backend admin token for the current browser session, it can request only the built-in read-only diagnostics and MCP tools explicitly allowlisted by the server operator. Each tool call requires browser confirmation and is audited.
+- The model still cannot execute shell commands, change production settings, retrain the model, edit files, start GitHub Actions, write to GitHub, or merge a pull request. The token is held in page memory only and is not persisted in local storage.
+- Configure MCP endpoints and per-server read-only tool allowlists in the worker environment. See [AI Operator MCP Plugins](./AI-OPERATOR-MCP-PLUGINS.md).
 - Engineering automation should be added only through separate server-side, authenticated, allowlisted tools with audit logs, least privilege, explicit confirmation for consequential changes, and CI-tested pull-request workflows.
 
 ## References
