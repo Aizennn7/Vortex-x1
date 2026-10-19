@@ -33,7 +33,7 @@ const status = (msg, cls='') => `<div class="page-status ${cls}" role="status">$
 async function api(path, opts={}) {
   const response = await fetch((base || '')+path, { ...opts, headers: { 'Content-Type':'application/json', ...(opts.token ? {Authorization:'Bearer '+opts.token}:{}), ...(opts.headers||{}) } });
   const text = await response.text(); let data; try { data = text ? JSON.parse(text) : {}; } catch { data = {message:text}; }
-  if (!response.ok) throw new Error(data.message || data.error || ('HTTP '+response.status));
+  if (!response.ok) throw new Error(data.error?.message || data.message || data.error || ('HTTP '+response.status));
   return data?.ok === true && Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data;
 }
 function utc(value) { if(!value) return '—'; const d=new Date(value); return Number.isNaN(d.getTime())?esc(value):d.toISOString().replace('T',' ').replace('.000Z',' UTC').replace('Z',' UTC'); }
