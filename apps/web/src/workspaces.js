@@ -6,7 +6,7 @@ const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
 const pages = [
   ['index.html','Overview'],['signals.html','Signals'],['markets.html','Markets'],['learning.html','AI Learning'],
   ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','Delivery'],
-  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['operator.html','AI Operator'],
+  ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['integrations.html','Plugins & MCP'],['operator.html','AI Operator'],
 ];
 const page = location.pathname.split('/').pop() || 'index.html';
 const current = pages.find(([file]) => file === page)?.[1] || 'Overview';
@@ -169,6 +169,70 @@ else if(page==='learning.html') void genericPage('AI Learning','Recorded learnin
 else if(page==='delivery.html') void genericPage('Delivery','Delivery configuration and current relay status.','/admin/status',['status','service','database']);
 else if(page==='performance.html') void genericPage('Performance','Measured outcomes only; unresolved signals are not counted as wins.','/api/performance',['key','settled','wins','losses','accuracy']);
 else if(page==='system.html') void genericPage('System Health','Health checks from the configured VORTEX worker.','/health',['service','status','version','timestamp']);
+async function integrationsPage() {
+ layout('Plugins & MCP','Connect the AI Operator to server-configured integrations. Privileged access is session-only; no token is saved in browser storage.',card('Authenticated backend',`<label>VORTEX admin bearer token (kept only in this page session)<input id="integrations-token" type="password" autocomplete="off" placeholder="Enter VORTEX_ADMIN_TOKEN"></label><p class="page-note">The token is sent only to the configured VORTEX relay over HTTPS. Never paste it into prompts or share it. MCP server URLs and credentials are configured on the backend, not here.</p><button id="integrations-load">Load plugins and commands</button><p id="integrations-status">${status('Enter the backend admin token to load integrations.')}</p>`) +
+ card('Plugin registry',`<div id="integrations-plugins" class="page-note">Not loaded.</div>`) +
+ card('Allowlisted commands',`<label>Read-only command<select id="integrations-command"><option value="">Load commands first</option></select></label><button id="integrations-run-command" disabled>Run selected read-only command</button><pre id="integrations-command-result" class="code-panel">No command run.</pre>`) +
+ card('MCP tools',`<div class="row-fields"><label>Configured server<select id="integrations-server"><option value="">Load plugins first</option></select></label><button id="integrations-discover" disabled>Discover tools</button></div><label>Allowlisted read-only tool<select id="integrations-tool"><option value="">Discover tools first</option></select></label><label>Tool arguments (JSON object)<textarea id="integrations-args" rows="4">{}</textarea></label><button id="integrations-call" disabled>Call selected read-only tool</button><pre id="integrations-tool-result" class="code-panel">No tool call.</pre><p class="page-note">Only tools explicitly allowlisted as read-only by the server administrator can be called. Discovery does not grant permission. Review upstream tool behavior before allowlisting.</p>`));
+ const tokenEl=document.getElementById('integrations-token');
+ const statusEl=document.getElementById('integrations-status');
+ const pluginsEl=document.getElementById('integrations-plugins');
+ const commandSelect=document.getElementById('integrations-command');
+ const serverSelect=document.getElementById('integrations-server');
+ const toolSelect=document.getElementById('integrations-tool');
+ const commandButton=document.getElementById('integrations-run-command');
+ const discoverButton=document.getElementById('integrations-discover');
+ const callButton=document.getElementById('integrations-call');
+ const adminApi=(path,opts={})=>{const token=tokenEl.value.trim();if(!token)throw new Error('Enter the VORTEX admin token first.');return api(path,{...opts,token});};
+ const option=(select,value,label)=>{const el=document.createElement('option');el.value=value;el.textContent=label;select.appendChild(el);};
+ document.getElementById('integrations-load').addEventListener('click',async()=>{
+  statusEl.textContent='Loading backend registry…';
+  try{
+   const [pluginData,commandData]=await Promise.all([adminApi('/admin/operator/plugins'),adminApi('/admin/operator/commands')]);
+   pluginsEl.textContent=JSON.stringify(pluginData,null,2);
+   commandSelect.replaceChildren();option(commandSelect,'','Choose a read-only command');
+   for(const command of commandData.commands||[])option(commandSelect,command.id,command.label+' ('+command.id+')');
+   commandButton.disabled=!(commandData.commands||[]).length;
+   serverSelect.replaceChildren();option(serverSelect,'','Choose a configured MCP server');
+   for(const server of pluginData.mcpServers||[])option(serverSelect,server.id,server.name+' — '+(server.enabled?'enabled':'disabled'));
+   discoverButton.disabled=!(pluginData.mcpServers||[]).some(server=>server.enabled);
+   statusEl.textContent='Loaded '+(pluginData.plugins||[]).length+' plugin descriptors and '+(pluginData.mcpServers||[]).length+' configured MCP servers.';
+  }catch(e){statusEl.textContent='Could not load registry: '+String(e?.message||e);}
+ });
+ commandButton.addEventListener('click',async()=>{
+  const id=commandSelect.value;if(!id)return;
+  if(!confirm('Run '+id+'? This command is allowlisted as read-only.'))return;
+  commandButton.disabled=true;
+  try{const result=await adminApi('/admin/operator/commands/'+encodeURIComponent(id)+'/run',{method:'POST',body:'{}'});document.getElementById('integrations-command-result').textContent=JSON.stringify(result,null,2);}
+  catch(e){document.getElementById('integrations-command-result').textContent='Command failed: '+String(e?.message||e);}
+  finally{commandButton.disabled=false;}
+ });
+ discoverButton.addEventListener('click',async()=>{
+  const id=serverSelect.value;if(!id)return;
+  discoverButton.disabled=true;toolSelect.replaceChildren();option(toolSelect,'','Discovering…');callButton.disabled=true;
+  try{
+   const result=await adminApi('/admin/operator/mcp/'+encodeURIComponent(id)+'/tools');
+   toolSelect.replaceChildren();option(toolSelect,'','Choose an allowlisted read-only tool');
+   const allowed=new Set(result.allowedReadOnlyTools||[]);
+   for(const tool of result.tools||[])if(allowed.has(tool.name))option(toolSelect,tool.name,tool.name+' — allowlisted');
+   document.getElementById('integrations-tool-result').textContent=JSON.stringify({server:result.server,discovered:(result.tools||[]).map(t=>({name:t.name,description:t.description,allowlisted:allowed.has(t.name)})),allowedReadOnlyTools:result.allowedReadOnlyTools||[]},null,2);
+   callButton.disabled=!allowed.size;
+   if(!allowed.size)statusEl.textContent='Tools discovered, but no tool is allowlisted. Review tool descriptions and configure readOnlyTools on the server.';
+  }catch(e){toolSelect.replaceChildren();option(toolSelect,'','Discovery failed');document.getElementById('integrations-tool-result').textContent='Tool discovery failed: '+String(e?.message||e);}
+  finally{discoverButton.disabled=false;}
+ });
+ toolSelect.addEventListener('change',()=>{callButton.disabled=!toolSelect.value;});
+ callButton.addEventListener('click',async()=>{
+  const server=serverSelect.value,toolName=toolSelect.value;if(!server||!toolName)return;
+  let args;try{args=JSON.parse(document.getElementById('integrations-args').value||'{}');if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('Arguments must be a JSON object.');}catch(e){statusEl.textContent='Invalid arguments: '+String(e?.message||e);return;}
+  if(!confirm('Call allowlisted read-only tool '+server+':'+toolName+'?'))return;
+  callButton.disabled=true;
+  try{const result=await adminApi('/admin/operator/mcp/'+encodeURIComponent(server)+'/call',{method:'POST',body:JSON.stringify({toolName,arguments:args})});document.getElementById('integrations-tool-result').textContent=JSON.stringify(result,null,2);}
+  catch(e){document.getElementById('integrations-tool-result').textContent='Tool call failed: '+String(e?.message||e);}
+  finally{callButton.disabled=false;}
+ });
+}
 else if(page==='operator.html') layout('AI Operator','A root-level assistant for read-only VORTEX diagnostics and reviewed engineering plans.',card('Local model setup',`<p class="page-note">Open the AI Operator button in the lower corner from any workspace. On Android, a 4B quantized model is a sensible first test with 16 GB RAM, but sustained speed depends on the phone chipset and memory pressure.</p><ol class="instruction-list"><li>Install a trusted Android inference runtime or use Termux with a llama.cpp OpenAI-compatible server.</li><li>Download a Qwen3 4B instruct GGUF in a quantization that fits your device (Q4 is a reasonable starting point).</li><li>Run the server bound to loopback only, not 0.0.0.0, and use its chat-completions endpoint.</li><li>Set the endpoint and exact model identifier in the AI Operator panel.</li><li>Test with “Inspect VORTEX status” and then ask for an explanation. If the browser blocks requests, do not expose the model port publicly; use a trusted same-origin private backend bridge.</li></ol><p class="page-note">This initial integration is intentionally advisory/read-only. It does not execute shell commands, merge PRs, trigger workflows, edit files, or access secret-management endpoints. Those actions need separately authenticated server-side tools, explicit allowlists, audit logs, and confirmation.</p><p><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noreferrer">llama.cpp server documentation ↗</a></p>`));
+else if(page==='integrations.html') void integrationsPage();
 else if(page==='settings.html') { layout('Settings','Connection state and configuration guidance.',card('Public data connection',`<p class="page-note">The dashboard reads public, secret-free views. Configure <code>VITE_RELAY_URL</code> during deployment to connect to the private worker. Privileged credentials must never be embedded in the public frontend.</p><p id="settings-status">${status('Checking health…')}</p><button id="settings-refresh">Refresh health</button>`));const load=async()=>{try{const d=await api('/health');document.getElementById('settings-status').innerHTML=status('Worker responded: '+(d.status||'reachable')+'. '+(d.note||''),'success')}catch(e){document.getElementById('settings-status').innerHTML=status('Worker health unavailable: '+e.message,'error')}};document.getElementById('settings-refresh').onclick=load;void load();}
 else if(page==='index.html') void overviewPage();
