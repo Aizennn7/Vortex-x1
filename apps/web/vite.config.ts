@@ -72,7 +72,7 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [react()],
     build: {
-      rollupOptions: { input: { index: resolve(process.cwd(), 'index.html'), signals: resolve(process.cwd(), 'signals.html'), markets: resolve(process.cwd(), 'markets.html'), learning: resolve(process.cwd(), 'learning.html'), secrets: resolve(process.cwd(), 'secrets.html'), instructions: resolve(process.cwd(), 'instructions.html'), delivery: resolve(process.cwd(), 'delivery.html'), performance: resolve(process.cwd(), 'performance.html'), system: resolve(process.cwd(), 'system.html'), settings: resolve(process.cwd(), 'settings.html'), operator: resolve(process.cwd(), 'operator.html') } },
+      rollupOptions: { input: { index: resolve(process.cwd(), 'index.html'), signals: resolve(process.cwd(), 'signals.html'), markets: resolve(process.cwd(), 'markets.html'), learning: resolve(process.cwd(), 'learning.html'), secrets: resolve(process.cwd(), 'secrets.html'), instructions: resolve(process.cwd(), 'instructions.html'), delivery: resolve(process.cwd(), 'delivery.html'), performance: resolve(process.cwd(), 'performance.html'), system: resolve(process.cwd(), 'system.html'), settings: resolve(process.cwd(), 'settings.html'), integrations: resolve(process.cwd(), 'integrations.html'), operator: resolve(process.cwd(), 'operator.html') } },
       outDir: 'dist',
       sourcemap: false,
       target: 'es2022',
