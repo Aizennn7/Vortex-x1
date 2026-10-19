@@ -1,4 +1,5 @@
 import './styles.css';
+import './signal-ux.css';
 import { relay } from './relay';
 
 const root = document.getElementById('workspace-root');
