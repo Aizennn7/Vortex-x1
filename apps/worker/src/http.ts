@@ -72,6 +72,7 @@ import { runMaintenance } from './jobs/maintenance.js';
 import { healthSnapshot } from './jobs/maintenance.js';
 import { withJob } from './jobs/job.js';
 import { isMarketOpen, toIso, type Pair } from '@vortex/core';
+import { callReadOnlyMcpTool, discoverMcpTools, listConfiguredMcpServers, OperatorMcpError } from './services/operator-mcp.js';
 
 interface RouteContext {
   runtime: WorkerRuntime;
@@ -162,6 +163,11 @@ const ADMIN_ROUTES: [string, string, (ctx: RouteContext) => Promise<unknown>][] 
   ['GET', '/admin/audit', auditRoute],
   ['GET', '/admin/paper', paperRoute],
   ['GET', '/admin/provider', providerRoute],
+  ['GET', '/admin/operator/plugins', operatorPluginsRoute],
+  ['GET', '/admin/operator/commands', operatorCommandsRoute],
+  ['POST', '/admin/operator/commands/:id/run', operatorCommandRunRoute],
+  ['GET', '/admin/operator/mcp/:id/tools', operatorMcpToolsRoute],
+  ['POST', '/admin/operator/mcp/:id/call', operatorMcpCallRoute],
 ];
 
 export function createRelay(runtime: WorkerRuntime): Server {
@@ -207,9 +213,11 @@ export function createRelay(runtime: WorkerRuntime): Server {
       const httpError =
         error instanceof HttpError
           ? error
-          // Driver/DB error text can contain connection internals; it is
-          // logged server-side below and never echoed to the caller.
-          : new HttpError(500, 'internal_error', 'Internal error — the worker logged the details.');
+          : error instanceof OperatorMcpError
+            ? new HttpError(error.status, error.code, error.message)
+            // Driver/DB error text can contain connection internals; it is
+            // logged server-side below and never echoed to the caller.
+            : new HttpError(500, 'internal_error', 'Internal error — the worker logged the details.');
       if (httpError.status >= 500) {
         runtime.logger.error('relay request failed', {
           component: 'relay',
@@ -1091,6 +1099,74 @@ async function paperRoute(ctx: RouteContext): Promise<unknown> {
     simulated: true,
     note: 'Paper trading only. No orders are sent to any broker.',
   };
+}
+
+async function operatorPluginsRoute(): Promise<unknown> {
+  return {
+    plugins: [
+      { id: 'github', name: 'GitHub MCP', kind: 'mcp', description: 'Repository, pull-request and CI tools when explicitly configured and allowlisted.' },
+      { id: 'custom-mcp', name: 'Custom MCP servers', kind: 'mcp', description: 'Operator-configured MCP servers with per-tool read-only allowlists.' },
+      { id: 'vortex-diagnostics', name: 'VORTEX diagnostics', kind: 'builtin', description: 'Read-only health and recent-signal inspection.' },
+    ],
+    mcpServers: listConfiguredMcpServers(),
+    note: 'Server URLs and credentials are configured on the backend only; no browser-supplied MCP URL is accepted.',
+  };
+}
+
+async function operatorCommandsRoute(): Promise<unknown> {
+  return {
+    commands: [
+      { id: 'diagnostics.health', label: 'Inspect system health', risk: 'read-only', confirmationRequired: false },
+      { id: 'signals.latest', label: 'Read recent signals', risk: 'read-only', confirmationRequired: false },
+    ],
+  };
+}
+
+async function operatorCommandRunRoute(ctx: RouteContext): Promise<unknown> {
+  const id = ctx.params.id;
+  let result: unknown;
+  if (id === 'diagnostics.health') {
+    result = await healthSnapshot(ctx.runtime);
+  } else if (id === 'signals.latest') {
+    result = { signals: await listSignals(db(ctx.runtime), { limit: 20 }) };
+  } else {
+    throw new HttpError(404, 'command_not_allowlisted', 'This command is not in the built-in read-only allowlist.');
+  }
+  await recordAudit(db(ctx.runtime), {
+    actor: `admin:${ctx.ip}`,
+    action: 'operator.command.run',
+    target: id,
+    detail: { risk: 'read-only' },
+  });
+  return { command: id, risk: 'read-only', result };
+}
+
+async function operatorMcpToolsRoute(ctx: RouteContext): Promise<unknown> {
+  const serverId = requireString(ctx.params.id, 'id');
+  const result = await discoverMcpTools(serverId);
+  await recordAudit(db(ctx.runtime), {
+    actor: `admin:${ctx.ip}`,
+    action: 'operator.mcp.tools_list',
+    target: serverId,
+    detail: { count: result.tools.length },
+  });
+  return result;
+}
+
+async function operatorMcpCallRoute(ctx: RouteContext): Promise<unknown> {
+  const serverId = requireString(ctx.params.id, 'id');
+  const body = asObject(ctx.body);
+  const toolName = requireString(body.toolName, 'toolName', 1);
+  if (toolName.length > 100) throw new HttpError(400, 'validation_error', 'toolName is too long.');
+  const args = body.arguments ?? {};
+  const result = await callReadOnlyMcpTool(serverId, toolName, args);
+  await recordAudit(db(ctx.runtime), {
+    actor: `admin:${ctx.ip}`,
+    action: 'operator.mcp.tool_call',
+    target: `${serverId}:${toolName}`,
+    detail: { argumentKeys: args && typeof args === 'object' && !Array.isArray(args) ? Object.keys(args as Record<string, unknown>).slice(0, 30) : [] },
+  });
+  return { server: serverId, toolName, result };
 }
 
 async function providerRoute(ctx: RouteContext): Promise<unknown> {
