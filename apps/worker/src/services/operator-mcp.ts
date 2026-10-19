@@ -7,6 +7,7 @@
  * No arbitrary shell/command execution is exposed here.
  */
 import { URL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 export interface McpServerConfig {
   id: string;
@@ -76,22 +77,30 @@ function getServer(id: string): McpServerConfig {
   return server;
 }
 
+const sessionIds = new Map<string, string>();
+
 function tokenFor(id: string): string | undefined {
   const envKey = `VORTEX_MCP_TOKEN_${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
   return process.env[envKey] || undefined;
 }
 
 async function rpc(server: McpServerConfig, method: string, params?: Record<string, unknown>): Promise<unknown> {
-  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+  const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-03-26' };
+  const sessionId = sessionIds.get(server.id);
+  if (sessionId) headers['mcp-session-id'] = sessionId;
   const token = tokenFor(server.id);
   if (token) headers.authorization = `Bearer ${token}`;
+  const notification = method.startsWith('notifications/');
   const response = await fetch(server.url, {
     method: 'POST',
     headers,
     redirect: 'error',
     signal: AbortSignal.timeout(12_000),
-    body: JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method, ...(params ? { params } : {}) }),
+    body: JSON.stringify({ jsonrpc: '2.0', ...(notification ? {} : { id: randomUUID() }), method, ...(params ? { params } : {}) }),
   });
+  const returnedSession = response.headers.get('mcp-session-id');
+  if (returnedSession) sessionIds.set(server.id, returnedSession);
+  if (notification && (response.status === 202 || response.status === 204)) return null;
   if (!response.ok) throw new OperatorMcpError(502, 'mcp_upstream_error', `MCP server returned HTTP ${response.status}.`);
   const type = response.headers.get('content-type') || '';
   if (!type.includes('application/json')) {
@@ -100,6 +109,16 @@ async function rpc(server: McpServerConfig, method: string, params?: Record<stri
   const payload = await response.json() as { result?: unknown; error?: { message?: string } };
   if (payload.error) throw new OperatorMcpError(502, 'mcp_rpc_error', payload.error.message || 'MCP request failed.');
   return payload.result;
+}
+
+async function initializeServer(server: McpServerConfig): Promise<void> {
+  sessionIds.delete(server.id);
+  await rpc(server, 'initialize', {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'vortex-operator', version: '1.0.0' },
+  });
+  await rpc(server, 'notifications/initialized');
 }
 
 export async function discoverMcpTools(id: string): Promise<{ server: string; tools: McpTool[]; allowedReadOnlyTools: string[] }> {
