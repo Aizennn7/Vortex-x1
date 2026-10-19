@@ -4,7 +4,7 @@
  * Cadence model (defaults: cadence 5 min, lead 60 s, horizon 60 s):
  *
  *   T-60s  publish window opens  → evaluate every enabled pair
- *   T-60s  signal inserted + Telegram published (status PLANNED → PUBLISHED)
+ *   T-60s  signal inserted and exposed in the VORTEX Signals inbox
  *   T      scheduled entry        → status ACTIVE
  *   T+60s  horizon ends           → settlement job reads the closing price
  *
@@ -182,26 +182,13 @@ export async function runSignalCycle(runtime: WorkerRuntime, now = new Date()): 
     summary.published += 1;
     summary.publishedIds.push(record.id);
 
-    // Publish immediately: the lead time is exactly one minute, so waiting is
-    // not an option and would break the promised pre-entry delivery.
-    const deliveries = runtime.telegram.enabled
-      ? await runtime.telegram.deliverSignal(record, 'PUBLISH')
-      : [{ channelLabel: 'none', status: 'SKIPPED' as const, detail: 'Telegram delivery disabled' }];
-    const confirmed = deliveries.some((d) => d.status === 'SENT');
+    // The database is the source of truth for the VORTEX inbox. The public
+    // dashboard reads this signal through the restricted public_signals view.
+    // No external messaging service is called; status changes remain auditable.
     await markPublished(db, [record.id], toIso(now));
     summary.detail.push(
-      `${record.pair} ${record.direction} @${record.confidence.toFixed(2)} → entry ${plan.entryTime}` +
-        (confirmed ? ' · Telegram confirmed' : ` · Telegram: ${deliveries.map((d) => d.status).join('/')}`),
+      `${record.pair} ${record.direction} @${record.confidence.toFixed(2)} → VORTEX inbox · entry ${plan.entryTime}`,
     );
-    if (!confirmed && runtime.telegram.enabled) {
-      await raiseAlert(db, {
-        severity: 'WARNING',
-        code: 'telegram-delivery-failed',
-        title: 'Telegram delivery not confirmed for a published signal',
-        detail: deliveries.map((d) => `${d.channelLabel}: ${d.status} — ${d.detail}`).join('; '),
-        metadata: { signalId: record.id, pair: record.pair },
-      }).catch(() => undefined);
-    }
   }
 
   return summary;
