@@ -1,0 +1,29 @@
+/* Signal UX: readable cards, stronger hierarchy, and comfortable mobile sizing. */
+.signal-card-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;margin:16px 0}
+.signal-card{min-width:0;padding:18px;border:1px solid rgba(93,190,255,.34);border-radius:18px;background:linear-gradient(145deg,rgba(18,44,70,.92),rgba(5,16,30,.96));box-shadow:inset 0 1px rgba(255,255,255,.06),0 12px 32px rgba(0,0,0,.2)}
+.signal-card-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.1)}
+.signal-eyebrow{margin:0 0 5px;color:#a9c7e3;font-size:.9rem;font-weight:800;letter-spacing:.12em}
+.signal-card-header h3{margin:0;font-size:clamp(1.6rem,4vw,2.15rem);line-height:1.1;font-weight:900;letter-spacing:-.035em}
+.signal-confidence{display:grid;justify-items:end;gap:3px;flex:0 0 auto}
+.signal-confidence strong{font-size:clamp(1.8rem,5vw,2.5rem);line-height:1;color:#63dcff;font-weight:900;font-variant-numeric:tabular-nums}
+.signal-confidence span{font-size:.65rem;color:#a8bfd7;letter-spacing:.07em;text-align:right}
+.signal-card-meta{display:flex;flex-wrap:wrap;gap:8px;margin:13px 0}
+.signal-status,.signal-result{display:inline-flex;align-items:center;min-height:32px;padding:5px 10px;border:1px solid rgba(255,255,255,.14);border-radius:9px;background:rgba(255,255,255,.045);font-size:.82rem;font-weight:750}
+.signal-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.signal-detail-grid>div{min-width:0;padding:10px;border:1px solid rgba(255,255,255,.075);border-radius:10px;background:rgba(0,0,0,.14)}
+.signal-detail-grid span{display:block;margin-bottom:5px;color:#9eb5ce;font-size:.68rem;font-weight:800;letter-spacing:.07em}
+.signal-detail-grid strong{display:block;color:#f1f7ff;font-size:.95rem;line-height:1.35;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.signal-strategy{margin:12px 0 0;color:#a9c7e3;font-size:.82rem;overflow-wrap:anywhere}
+.signal-table{display:none!important}
+.signal-empty{padding:28px 16px;border:1px dashed rgba(130,190,235,.35);border-radius:14px;text-align:center;color:#b7cbe0;line-height:1.65}
+#signal-search,#signal-filter{font-size:1rem;min-height:46px}
+@media(max-width:600px){
+ .signal-card-list{grid-template-columns:1fr;gap:12px;margin:12px 0}
+ .signal-card{padding:16px;border-radius:15px}
+ .signal-card-header h3{font-size:1.8rem}
+ .signal-confidence strong{font-size:2rem}
+ .signal-detail-grid{gap:7px}
+ .signal-detail-grid>div{padding:9px}
+ .signal-detail-grid strong{font-size:.9rem}
+ .workspace-card{padding:14px}
+}

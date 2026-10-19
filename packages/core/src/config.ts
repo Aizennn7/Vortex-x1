@@ -58,7 +58,7 @@ export const configSchema = z.object({
   publishLeadSeconds: intLike(60),
   signalHorizonSeconds: intLike(60),
   /** Maximum number of signals published per 5-minute slot. */
-  maxSignalsPerSlot: intLike(2),
+  maxSignalsPerSlot: intLike(5),
   minConfidence: numLike(0.62),
   minRewardRisk: numLike(1.2),
   maxSpreadPips: numLike(2.5),
