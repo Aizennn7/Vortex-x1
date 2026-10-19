@@ -6,6 +6,28 @@ It is **not** a broker, an execution venue, or financial advice. It places no or
 
 ---
 
+## AI-free automated operation
+
+The scheduled signal pipeline does **not** require an LLM, local model, or AI-provider API key. The core pipeline is deterministic and runs from market data, configured strategy/risk rules, and stored outcomes:
+
+1. GitHub Actions runs `vortex-jobs.yml` every five minutes during its configured FX-market windows.
+2. The one-shot runner executes ingestion, due-signal activation, settlement, signal evaluation, and maintenance in order.
+3. Database-backed job slots and a scheduler lease prevent overlapping duplicate runs; failures are logged and retried within bounded limits.
+4. Signals and their outcomes are stored in the database for dashboard reporting and strategy evaluation.
+5. The separate nightly learning workflow trains and evaluates the repository's built-in statistical model. It does not call an external LLM API, and candidates are only promoted when evaluation gates pass.
+
+### Required configuration
+
+- `DATABASE_URL` (or `DATABASE_URL_DIRECT`) and `VORTEX_SECRET_KEY` GitHub Actions secrets.
+- A valid market-data provider key, normally `TWELVEDATA_API_KEY`; optional additional keys can be configured as documented in the workflow.
+- The dashboard's relay/data-source configuration so the UI reads the same database-backed results.
+
+An AI Operator endpoint or AI-provider API key is optional and is not part of signal generation, settlement, or scheduled job execution. Do not put provider secrets into browser-side code.
+
+**Cadence limitation:** GitHub Actions scheduled workflows are best-effort and can be delayed; the five-minute cron is not a guaranteed real-time daemon. The pipeline must have valid secrets, a reachable database, provider quota, and fresh market data to generate real signals. It intentionally does not fabricate signals when those prerequisites fail.
+
+---
+
 ## Free-tier architecture
 
 VORTEX SI is designed to run end-to-end on **free-tier services only** without requiring paid Render hosting or a 24/7 server:
