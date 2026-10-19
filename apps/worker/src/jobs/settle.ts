@@ -169,13 +169,6 @@ async function settleOne(
   };
 
   await syncPaper(runtime, settled, settlement.entryPrice);
-  if (runtime.telegram.enabled) {
-    await runtime.telegram
-      .deliverSignal(settled, 'SETTLEMENT', { detail: settlement.detail, entryPrice: settlement.entryPrice })
-      .catch((error) => {
-        runtime.logger.warn('settlement message failed', { component: 'settle', error: (error as Error).message });
-      });
-  }
   return settlement.outcome;
 }
 
