@@ -15,7 +15,7 @@ No paid Render hosting or 24/7 VM is required.
 - Migration `0007_access_control.sql` enables Row-Level Security (RLS) on every base table, revokes all base-table privileges from `PUBLIC`, `anon`, and `authenticated`, and grants `SELECT` to `anon` only on 16 secret-free `public_*` views (`public_worker_status`, `public_market_quality`, `public_provider_budget`, `public_quota_usage`, `public_overall_performance`, `public_signals`, `public_alerts`, `public_agent_status`, etc.).
 - When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (the public `anon` key, **never** the `service_role` key) are configured as GitHub Repository Variables, the GitHub Pages bundle queries those read-only `public_*` views directly.
 - Both `apps/web/vite.config.ts` and `scripts/assert-no-secrets-in-bundle.mjs` fail the build if a `service_role` or `sb_secret_` credential is ever supplied.
-- Privileged mutations (encrypting the Twelve Data API key, ingesting candles, settling trades, sending Telegram messages, training models) run exclusively inside GitHub Actions using server-only Repository Secrets (`DATABASE_URL`, `VORTEX_SECRET_KEY`, `TWELVEDATA_API_KEY`, `TELEGRAM_BOT_TOKEN`).
+- Privileged mutations (encrypting the Twelve Data API key, ingesting candles, settling trades, and training models) run exclusively inside GitHub Actions using server-only Repository Secrets (`DATABASE_URL`, `VORTEX_SECRET_KEY`, `TWELVEDATA_API_KEY`). Signals and settlement outcomes are stored in the database and displayed in the VORTEX Inbox; no external messaging service is used.
 
 ### GitHub Actions scheduling limits
 - **Minimum cron interval**: GitHub Actions `schedule` triggers run at most every **5 minutes** (`*/5 * * * 1-5`).
@@ -42,9 +42,6 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 | `DATABASE_URL_DIRECT` | Optional | Direct connection (`postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres`). Only used as a fallback when `DATABASE_URL` is empty. The direct endpoint is IPv6-only on the Free plan and is rejected on GitHub Actions unless `VORTEX_DB_ALLOW_DIRECT_CONNECTION=true`. |
 | `VORTEX_SECRET_KEY` | **Yes** | 32-byte key (`node scripts/generate-secrets.mjs`) used for AES-256-GCM encryption of `TWELVEDATA_API_KEY` at rest in `provider_keys`. |
 | `TWELVEDATA_API_KEY` | **Yes** (for live data) | Your Twelve Data Free API key. Automatically encrypted and upserted as `twelvedata-primary` during job runs. |
-| `TELEGRAM_BOT_TOKEN` | Optional | Telegram Bot token from `@BotFather` (required only when `VORTEX_TELEGRAM_ENABLED=true`). |
-| `TELEGRAM_CHANNEL_PRIMARY` | Optional | Primary Telegram chat/channel ID (e.g. `-1001234567890`). |
-| `TELEGRAM_CHANNEL_SECONDARY` | Optional | Optional secondary Telegram chat/channel ID. |
 | `VORTEX_ADMIN_TOKEN` | Optional | 32-byte hex token (`node scripts/generate-secrets.mjs`), needed only if you also run the optional HTTP relay. |
 
 ### Repository Variables (Non-secret configuration & public browser config)
@@ -56,7 +53,6 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 | `VITE_SUPABASE_ANON_KEY` | `eyJ...` or `sb_publishable_...` | Supabase **anon / public** key only (never `service_role`). Has `SELECT` access only to `public_*` views. |
 | `VORTEX_PAIRS` | `EUR/USD,GBP/USD` | Comma-separated pair list (keep at 2–3 pairs on Twelve Data Free). |
 | `VORTEX_PROVIDER` | `twelvedata` | Market data provider (`twelvedata` for real market data). |
-| `VORTEX_TELEGRAM_ENABLED` | `false` (or `true`) | Set `true` once `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHANNEL_PRIMARY` are configured. |
 
 ---
 
@@ -85,7 +81,7 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 
 3. **Add GitHub Repository Secrets and Variables**
    - In your GitHub repository, open **Settings → Secrets and variables → Actions**.
-   - Add the **Secrets** (`DATABASE_URL`, `VORTEX_SECRET_KEY`, `TWELVEDATA_API_KEY`, and optional `TELEGRAM_*`).
+   - Add the **Secrets** (`DATABASE_URL`, `VORTEX_SECRET_KEY`, and `TWELVEDATA_API_KEY`).
    - Add the **Variables** (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VORTEX_PAIRS=EUR/USD,GBP/USD`, `VORTEX_PROVIDER=twelvedata`).
 
 4. **Enable GitHub Pages**
