@@ -191,7 +191,9 @@ export async function runSignalCycle(runtime: WorkerRuntime, now = new Date()): 
     await markPublished(db, [record.id], toIso(now));
     summary.detail.push(
       `${record.pair} ${record.direction} @${record.confidence.toFixed(2)} → entry ${plan.entryTime}` +
-        (confirmed ? ' · Telegram confirmed' : ` · Telegram: ${deliveries.map((d) => d.status).join('/')}`),
+        (confirmed
+          ? ' · Telegram confirmed'
+          : ` · Telegram: ${deliveries.map((d) => `${d.status} (${d.detail})`).join(' / ')}`),
     );
     if (!confirmed && runtime.telegram.enabled) {
       await raiseAlert(db, {
