@@ -5,7 +5,7 @@ const root = document.getElementById('workspace-root');
 const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
 const pages = [
   ['index.html','Overview'],['signals.html','Signals'],['markets.html','Markets'],['learning.html','AI Learning'],
-  ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','Delivery'],
+  ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','VORTEX Inbox'],
   ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['integrations.html','Plugins & MCP'],['operator.html','AI Operator'],
 ];
 const page = location.pathname.split('/').pop() || 'index.html';
@@ -294,7 +294,7 @@ else if(page==='secrets.html') void secretsPage();
 else if(page==='instructions.html') instructionsPage();
 else if(page==='markets.html') void marketsPage();
 else if(page==='learning.html') void genericPage('AI Learning','Recorded learning runs and model registry data.','/api/summary',['lastJob','workerStatus','generatedAt']);
-else if(page==='delivery.html') void genericPage('Delivery','Delivery configuration and current relay status.','/admin/status',['status','service','database']);
+else if(page==='delivery.html') void signalsPage();
 else if(page==='performance.html') void performancePage();
 else if(page==='system.html') void genericPage('System Health','Health checks from the configured VORTEX worker.','/health',['service','status','version','timestamp']);
 else if(page==='operator.html') layout('AI Operator','A root-level assistant for read-only VORTEX diagnostics and reviewed engineering plans.',card('Local model setup',`<p class="page-note">Open the AI Operator button in the lower corner from any workspace. On Android, a 4B quantized model is a sensible first test with 16 GB RAM, but sustained speed depends on the phone chipset and memory pressure.</p><ol class="instruction-list"><li>Install a trusted Android inference runtime or use Termux with a llama.cpp OpenAI-compatible server.</li><li>Download a Qwen3 4B instruct GGUF in a quantization that fits your device (Q4 is a reasonable starting point).</li><li>Run the server bound to loopback only, not 0.0.0.0, and use its chat-completions endpoint.</li><li>Set the endpoint and exact model identifier in the AI Operator panel.</li><li>Test with “Inspect VORTEX status” and then ask for an explanation. If the browser blocks requests, do not expose the model port publicly; use a trusted same-origin private backend bridge.</li></ol><p class="page-note">The model is advisory by default. If you provide the backend admin token for this session, it can request the built-in read-only diagnostics and MCP tools explicitly allowlisted on the server; every tool call requires confirmation. It cannot run shell commands, merge PRs, dispatch workflows, modify files, trade, or access secret-management endpoints. Configure integrations in the <a href="./integrations.html">Plugins &amp; MCP Manager</a>. The backend enforces allowlists and audit logging.</p><p><a href="https://github.com/ggerganov/llama.cpp" target="_blank" rel="noreferrer">llama.cpp server documentation ↗</a></p>`));
