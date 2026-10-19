@@ -1,5 +1,6 @@
 import './styles.css';
 import './signal-ux.css';
+import './soul-reaper.css';
 import { relay } from './relay';
 
 const root = document.getElementById('workspace-root');
@@ -12,7 +13,7 @@ const pages = [
 const page = location.pathname.split('/').pop() || 'index.html';
 const current = pages.find(([file]) => file === page)?.[1] || 'Overview';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const nav = () => `<aside class="page-sidebar"><a class="nexus-brand" href="./index.html"><span class="nexus-brand-mark">V</span><span><strong>VORTEX SI</strong><small>Signal Intelligence</small></span></a><nav>${pages.map(([href,label])=>`<a href="./${href}" ${label===current?'aria-current="page"':''}>${label}</a>`).join('')}</nav></aside>`;
+const nav = () => `<aside class="page-sidebar"><a class="nexus-brand" href="./index.html"><span class="nexus-brand-mark" aria-hidden="true"><span class="brand-v">V</span><span class="brand-kanji">斬</span></span><span><strong>VORTEX SI</strong><small>魂の覚醒 · SOUL REAPER</small></span></a><nav>${pages.map(([href,label])=>`<a href="./${href}" ${label===current?'aria-current="page"':''}>${label}</a>`).join('')}</nav></aside>`;
 const operatorMarkup = () => `
   <button class="ai-operator-launch" id="ai-operator-launch" type="button" aria-controls="ai-operator-panel" aria-expanded="false"><span aria-hidden="true">✳</span> AI Operator</button>
   <section class="ai-operator-panel" id="ai-operator-panel" aria-label="VORTEX AI Operator" hidden>
