@@ -1,6 +1,6 @@
 # VORTEX SI
 
-VORTEX SI is a market-signal research, paper-settlement, and Telegram notification system for spot FX and XAU/USD on the 1-minute timeframe (5-minute horizon).
+VORTEX SI is a market-signal research and paper-settlement system for spot FX and XAU/USD on the 1-minute timeframe (5-minute horizon). Qualified signals and settlement results are recorded in the VORTEX dashboard; no Telegram or external messaging delivery is used.
 
 It is **not** a broker, an execution venue, or financial advice. It places no orders. "Win", "loss", and "expectancy" figures are paper settlements on 1-minute OHLC bars with spread and slippage charged on every trade; they are not realised profit.
 
@@ -46,8 +46,8 @@ VORTEX SI is designed to run end-to-end on **free-tier services only** without r
 │  Twelve Data Free API     │ ◀──────────────────────────── │  GitHub Actions Jobs        │
 │  • 8 req/min, 800 req/day │   Quota-reserved M1 ingest    │  • vortex-jobs.yml (*/5m)   │
 ├───────────────────────────┤                               │  • vortex-learning.yml (1d) │
-│  Telegram Bot API         │ ◀──────────────────────────── │  • apps/worker --once       │
-│  • Signal & digest alerts │   Idempotent delivery ledger  │  (holds server secrets)     │
+│  VORTEX Inbox             │ ◀──────────────────────────── │  • apps/worker --once       │
+│  • Signals & settlements  │   Database-backed records     │  (holds server secrets)     │
 └───────────────────────────┘                               └─────────────────────────────┘
 ```
 
@@ -69,7 +69,7 @@ VORTEX SI eliminates the paid relay requirement **without exposing privileged cr
    - When `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are set, the GitHub Pages dashboard queries those read-only `public_*` views directly over HTTPS.
    - Alternatively, `.github/workflows/pages.yml` can export a sanitized, secret-checked `snapshot.json` at build time (`npm run snapshot:export`, `VITE_DATA_SOURCE=snapshot`).
    - The HTTP relay (`npm run start:relay`) remains available for local development or optional self-hosting.
-2. **Privileged operations (key encryption, ingestion, Telegram tests)**:
+2. **Privileged operations (key encryption, ingestion, settlement)**:
    - Write operations and secret handling run strictly server-side inside GitHub Actions workflows (`vortex-jobs.yml`, `vortex-learning.yml`) or the local admin CLI (`npm run admin`), authenticated directly to Postgres via `DATABASE_URL` and `VORTEX_SECRET_KEY`.
 
 ### GitHub Actions scheduling limits & honest status reporting
