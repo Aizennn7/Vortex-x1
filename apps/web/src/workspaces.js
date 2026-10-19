@@ -6,7 +6,7 @@ import { relay } from './relay';
 const root = document.getElementById('workspace-root');
 const base = (import.meta.env.VITE_RELAY_URL || '').replace(/\/$/, '');
 const pages = [
-  ['index.html','Overview'],['signals.html','Signals'],['markets.html','Markets'],['learning.html','AI Learning'],
+  ['index.html','Overview'],['signals.html','Signals'],['signal-history.html','Signal History'],['markets.html','Markets'],['learning.html','AI Learning'],
   ['secrets.html','Secrets & Data'],['instructions.html','Instructions'],['delivery.html','VORTEX Inbox'],
   ['performance.html','Performance'],['system.html','System Health'],['settings.html','Settings'],['integrations.html','Plugins & MCP'],['operator.html','AI Operator'],
 ];
