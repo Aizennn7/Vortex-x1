@@ -123,6 +123,7 @@ async function initializeServer(server: McpServerConfig): Promise<void> {
 
 export async function discoverMcpTools(id: string): Promise<{ server: string; tools: McpTool[]; allowedReadOnlyTools: string[] }> {
   const server = getServer(id);
+  await initializeServer(server);
   const result = await rpc(server, 'tools/list') as { tools?: McpTool[] } | undefined;
   const tools = Array.isArray(result?.tools) ? result!.tools!.slice(0, 200).map((tool) => ({
     name: String(tool.name || '').slice(0, 100),
@@ -142,5 +143,6 @@ export async function callReadOnlyMcpTool(id: string, toolName: string, args: un
   }
   const serialized = JSON.stringify(args);
   if (serialized.length > 16_000) throw new OperatorMcpError(413, 'tool_arguments_too_large', 'Tool arguments exceed 16 KB.');
+  await initializeServer(server);
   return rpc(server, 'tools/call', { name: toolName, arguments: args as Record<string, unknown> });
 }
