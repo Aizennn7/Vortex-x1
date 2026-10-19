@@ -41,6 +41,7 @@ import {
   type SummaryPayload,
 } from './relay.js';
 import './styles.css';
+import './soul-reaper.css';
 
 /**
  * Poll a read endpoint. On failure the previous successful payload is kept and
