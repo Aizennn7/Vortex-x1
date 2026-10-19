@@ -517,7 +517,7 @@ function Dashboard() {
       <aside className="nexus-sidebar" aria-label="VORTEX navigation">
         <a className="nexus-brand" href="#overview"><span className="nexus-brand-mark" aria-hidden="true"><span className="brand-v">V</span><span className="brand-kanji">斬</span></span><span><strong>VORTEX</strong><small>魂の覚醒 · SOUL REAPER</small></span></a>
         <nav className="workspace-nav" aria-label="Workspace sections">
-          <a href="./index.html">⌂ <span>Overview</span></a><a href="./signals.html">⌁ <span>Signals</span></a><a href="./markets.html">▥ <span>Markets</span></a><a href="./learning.html">♧ <span>AI Learning</span></a><a href="./secrets.html">☁ <span>Secrets & Data</span></a><a href="./instructions.html">▤ <span>Instructions</span></a><a href="./delivery.html">➤ <span>Delivery</span></a><a href="./performance.html">⌁ <span>Performance</span></a><a href="./system.html">⚙ <span>System Health</span></a><a href="./settings.html">⚙ <span>Settings</span></a>
+          <a href="./index.html">⌂ <span>Overview</span></a><a href="./signals.html">⌁ <span>Signals</span></a><a href="./signal-history.html">◷ <span>Signal History</span></a><a href="./markets.html">▥ <span>Markets</span></a><a href="./learning.html">♧ <span>AI Learning</span></a><a href="./secrets.html">☁ <span>Secrets & Data</span></a><a href="./instructions.html">▤ <span>Instructions</span></a><a href="./delivery.html">➤ <span>Delivery</span></a><a href="./performance.html">⌁ <span>Performance</span></a><a href="./system.html">⚙ <span>System Health</span></a><a href="./settings.html">⚙ <span>Settings</span></a>
         </nav>
         <p className="nexus-sidebar-quote">“The future belongs to those who never stop exploring.”</p>
       </aside>
