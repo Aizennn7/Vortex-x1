@@ -514,7 +514,7 @@ function Dashboard() {
 
       <div className="nexus-shell">
       <aside className="nexus-sidebar" aria-label="VORTEX navigation">
-        <a className="nexus-brand" href="#overview"><span className="nexus-brand-mark">V</span><span><strong>VORTEX</strong><small>Predict · Learn · Grow</small></span></a>
+        <a className="nexus-brand" href="#overview"><span className="nexus-brand-mark" aria-hidden="true"><span className="brand-v">V</span><span className="brand-kanji">斬</span></span><span><strong>VORTEX</strong><small>魂の覚醒 · SOUL REAPER</small></span></a>
         <nav className="workspace-nav" aria-label="Workspace sections">
           <a href="./index.html">⌂ <span>Overview</span></a><a href="./signals.html">⌁ <span>Signals</span></a><a href="./markets.html">▥ <span>Markets</span></a><a href="./learning.html">♧ <span>AI Learning</span></a><a href="./secrets.html">☁ <span>Secrets & Data</span></a><a href="./instructions.html">▤ <span>Instructions</span></a><a href="./delivery.html">➤ <span>Delivery</span></a><a href="./performance.html">⌁ <span>Performance</span></a><a href="./system.html">⚙ <span>System Health</span></a><a href="./settings.html">⚙ <span>Settings</span></a>
         </nav>
@@ -524,13 +524,13 @@ function Dashboard() {
 
       <section className="cosmic-hero" id="overview" aria-labelledby="hero-title">
         <div className="hero-copy">
-          <p className="eyebrow"><span className="status-orb" /> VORTEX SIGNAL INTELLIGENCE</p>
-          <h2 id="hero-title">Predict the market.<br /><em>Learn. Adapt. Evolve.</em></h2>
+          <p className="eyebrow"><span className="status-orb" /> 死神の領域 · VORTEX SIGNAL INTELLIGENCE</p>
+          <h2 id="hero-title">Awaken the signal.<br /><em>Discern the truth.</em></h2>
           <p className="hero-description">VORTEX FOREX INTELLIGENCE · QUALIFIED SIGNALS · CONTINUOUS LEARNING</p>
           <div className="hero-actions"><a className="primary-link" href="./signals.html">Explore signals <span aria-hidden="true">↗</span></a><a className="quiet-link" href="./system.html">System health</a></div>
           <p className="hero-footnote">INFORMATIONAL ONLY · NO ORDERS ARE PLACED</p>
         </div>
-        <div className="planet-art" aria-hidden="true"><div className="planet-ring"></div><div className="planet"></div><span className="orbit-dot"></span><span className="blossom blossom-one">✿</span><span className="blossom blossom-two">✿</span><span className="blossom blossom-three">✧</span></div>
+        <div className="reaper-art" aria-hidden="true"><div className="reaper-moon"></div><div className="reaper-halo"></div><div className="reaper-cloak"></div><div className="reaper-head"></div><div className="reaper-blade"></div><span className="reaper-kanji">覚醒</span><span className="reaper-seal">斬</span></div>
       </section>
 
       <section className="signal-admin-access" aria-label="Signal scan trigger status">

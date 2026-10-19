@@ -104,3 +104,28 @@ tbody tr:hover{background:#ffffff0a}
  .cosmic-hero{min-height:245px}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+
+/* Soul Reaper hero and original VORTEX insignia — not an anime screenshot. */
+.nexus-brand-mark{position:relative!important;isolation:isolate;overflow:hidden;border:1px solid #f5f5f5!important;background:linear-gradient(145deg,#f6f6f6,#777)!important;color:#050505!important;box-shadow:0 0 24px #fff2,inset 0 0 0 3px #090909!important}
+.brand-v{font-family:Georgia,serif;font-weight:900;font-size:27px;line-height:1;transform:translateX(-2px)}
+.brand-kanji{position:absolute;right:1px;bottom:0;font-size:14px;line-height:1;color:#111;background:#eee;padding:1px 2px;border-left:1px solid #111}
+.nexus-brand small{letter-spacing:.13em!important;font-size:.57rem!important;color:#c7c7c7!important}
+.cosmic-hero{position:relative;isolation:isolate;min-height:430px!important;display:flex;align-items:center;overflow:hidden;border:1px solid #ffffff42!important;border-radius:5px!important;background:radial-gradient(ellipse at 72% 45%,#fff1,transparent 35%),linear-gradient(110deg,#030303 0%,#101010 53%,#050505 100%)!important;box-shadow:0 24px 80px #000e,inset 0 0 45px #fff06!important}
+.cosmic-hero:before{content:"";position:absolute;inset:0;z-index:-1;opacity:.42;background-image:radial-gradient(#eee 1px,transparent 1.5px),radial-gradient(#888 .6px,transparent 1px);background-size:13px 13px,5px 5px;background-position:0 0,3px 4px;mask-image:linear-gradient(90deg,#000 0%,#000 35%,transparent 72%)}
+.cosmic-hero:after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:linear-gradient(110deg,transparent 35%,#fff06 50%,transparent 51%),repeating-linear-gradient(132deg,transparent 0 38px,#ffffff09 39px,transparent 41px 77px)!important}
+.hero-copy{position:relative;z-index:2;max-width:62%!important}
+.cosmic-hero .eyebrow{font-size:.7rem!important;letter-spacing:.18em!important;color:#e9e9e9!important}
+.cosmic-hero h2{font-family:Georgia,"Times New Roman",serif!important;font-size:clamp(2.2rem,5vw,4.7rem)!important;line-height:1.02!important;letter-spacing:.025em!important;text-transform:none!important;text-shadow:0 3px 22px #000}
+.cosmic-hero h2 em{display:inline-block;margin-top:.3rem;color:#c9c9c9!important;font-size:.56em;font-weight:400!important;letter-spacing:.12em!important}
+.hero-footnote{letter-spacing:.17em!important;color:#9b9b9b!important}
+.reaper-art{position:absolute;right:0;top:0;width:52%;height:100%;min-height:320px;overflow:hidden;pointer-events:none;opacity:.92}
+.reaper-moon{position:absolute;width:43%;aspect-ratio:1;right:15%;top:17%;border-radius:50%;background:radial-gradient(circle at 30% 23%,#fff 0%,#c7c7c7 3%,#626262 14%,#222 47%,#020202 72%);box-shadow:inset -35px -12px 50px #000,0 0 55px #fff2}
+.reaper-halo{position:absolute;width:74%;height:38%;right:0;top:28%;border:1px solid #ffffff42;border-radius:50%;transform:rotate(-18deg);box-shadow:0 0 30px #fff1}
+.reaper-cloak{position:absolute;right:34%;top:42%;width:19%;height:51%;background:linear-gradient(90deg,#020202,#292929 45%,#030303);clip-path:polygon(25% 0,75% 0,100% 100%,0 100%);filter:drop-shadow(0 0 8px #fff2)}
+.reaper-head{position:absolute;right:39%;top:31%;width:10%;aspect-ratio:1;border-radius:48% 48% 40% 40%;background:radial-gradient(circle at 40% 25%,#555,#080808 65%);box-shadow:0 0 0 2px #aaa2}
+.reaper-blade{position:absolute;right:48%;top:10%;height:83%;width:2px;transform:rotate(23deg);background:linear-gradient(#fff, #777 38%,#fff 52%,#222);box-shadow:0 0 10px #fff8}
+.reaper-kanji{position:absolute;right:7%;bottom:7%;font-family:serif;font-size:clamp(2.5rem,7vw,6rem);font-weight:900;letter-spacing:.18em;color:#ffffff0c;-webkit-text-stroke:1px #ffffff55}
+.reaper-seal{position:absolute;right:5%;top:8%;display:grid;place-items:center;width:35px;height:35px;border:1px solid #fff8;color:#fff;font-family:serif;font-size:1.4rem;background:#050505aa}
+@media(max-width:760px){.cosmic-hero{min-height:350px!important}.hero-copy{max-width:82%!important}.reaper-art{width:65%;right:-10%;opacity:.58}.reaper-moon{width:45%;right:8%;top:20%}.reaper-cloak{right:28%}}
+@media(max-width:560px){.cosmic-hero{min-height:340px!important;padding:1.3rem!important}.hero-copy{max-width:95%!important}.cosmic-hero h2{font-size:2.5rem!important}.reaper-art{width:72%;right:-18%;opacity:.36}.reaper-kanji{font-size:3rem}.nexus-brand small{font-size:.5rem!important}}
