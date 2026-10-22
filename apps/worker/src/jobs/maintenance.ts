@@ -13,7 +13,6 @@ import { toIso, type HealthComponent, type ServiceStatus } from '@vortex/core';
 import {
   lastSuccessfulJob,
   listAlerts,
-  listDeliveries,
   listHealth,
   listLearningRuns,
   listQuality,
@@ -197,37 +196,21 @@ export async function runMaintenance(runtime: WorkerRuntime, now = new Date()): 
     summary.alertsResolved.push('provider-quota-low');
   }
 
-  /* -------------------------------------------------------- delivery */
-  const deliveries = await listDeliveries(db, 200);
-  const failed = deliveries.filter((d) => d.status === 'FAILED').length;
-  const unconfirmed = deliveries.filter((d) => d.status === 'UNKNOWN').length;
-  const sent = deliveries.filter((d) => d.status === 'SENT').length;
-  const telegramConfig = runtime.telegram.configuration();
-  const deliveryStatus: ServiceStatus =
-    telegramConfig.status !== 'CONNECTED'
-      ? telegramConfig.status
-      : failed > 0
-        ? 'DEGRADED'
-        : sent > 0
-          ? 'CONNECTED'
-          : 'NOT VERIFIED';
+  /* ------------------------------------------------------ in-app inbox */
+  // Signal publication is persisted in VORTEX and shown in the in-app inbox.
+  // Telegram is no longer a delivery channel, so its disabled configuration
+  // must not make System Health report the inbox as disconnected.
+  const inboxSignals = await listSignals(db, { limit: 200 });
+  const inboxStatus: ServiceStatus = 'CONNECTED';
   await setComponentHealth(db, {
+    // Keep the historical key so existing health rows are updated in place.
     component: 'telegram',
-    status: deliveryStatus,
-    detail:
-      telegramConfig.status === 'CONNECTED'
-        ? `${sent} confirmed, ${failed} failed, ${unconfirmed} unconfirmed delivery record(s)`
-        : telegramConfig.detail,
-    metadata: { sent, failed, unconfirmed, channels: runtime.config.telegramChannels.length },
+    status: inboxStatus,
+    detail: `In-app VORTEX inbox is database-backed; ${inboxSignals.length} recent signal record(s) available. External Telegram delivery is disabled.`,
+    metadata: { channel: 'in-app', recentSignalRecords: inboxSignals.length, externalDeliveryEnabled: false },
   });
-  if (failed > 0) {
-    await raiseAlert(db, {
-      severity: 'WARNING',
-      code: 'telegram-delivery-failed',
-      title: `${failed} Telegram delivery record(s) failed`,
-      detail: 'Review the delivery ledger. Unconfirmed sends are never retried automatically to avoid duplicates.',
-    });
-    summary.alertsRaised.push('telegram-delivery-failed');
+  if (await resolveAlert(db, 'telegram-delivery-failed')) {
+    summary.alertsResolved.push('telegram-delivery-failed');
   }
 
   /* ---------------------------------------------------------- signals */
@@ -377,7 +360,7 @@ function labelFor(component: string): string {
     worker: 'Background worker',
     market_data: 'Market data',
     provider_keys: 'Provider API keys',
-    telegram: 'Telegram delivery',
+    telegram: 'VORTEX Inbox',
     signals: 'Signal engine',
     learning: 'Self-learning',
     alerts: 'Alerts',
