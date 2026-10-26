@@ -22,6 +22,7 @@ import {
   authenticationFailureGuidance,
   DatabaseConfigError,
   resolveDatabaseConnection,
+  supabasePoolerTenantGuidance,
   type DatabaseTarget,
 } from '../connection.js';
 import { status } from '../migrate.js';
@@ -232,6 +233,16 @@ async function main(): Promise<void> {
         'Password rejected (28P01). The route, host, port, database and user are ' +
           'correct; the repository secret DATABASE_URL holds the wrong password. ' +
           'See the checklist in the log. The password and URI are never printed.',
+      );
+    } else if (
+      target.kind === 'session-pooler' &&
+      /tenant\/user.*not found|tenant or user.*not found/i.test(failure.message)
+    ) {
+      process.stderr.write(`\n${supabasePoolerTenantGuidance(target)}\n`);
+      annotate(
+        'error',
+        'Supabase pooler tenant not found',
+        'Supabase rejected the Session Pooler tenant/user. Re-copy the exact Session Pooler URI for the intended project and update repository secret DATABASE_URL. Credentials were not printed.',
       );
     }
     process.stderr.write('Nothing was created, applied or changed.\n');
