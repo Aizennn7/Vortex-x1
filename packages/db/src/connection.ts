@@ -709,5 +709,5 @@ export function supabasePoolerTenantGuidance(
     'Fix: open Supabase Dashboard → Connect → Session pooler for the intended project and copy the complete URI. Replace the GitHub repository secret DATABASE_URL at Settings → Secrets and variables → Actions → Repository secrets.',
     'Keep port 5432 and ensure the host and username come from the same Connect panel. Do not reset the database password solely for this error.',
     'DATABASE_URL takes precedence when both database variables are set; adding DATABASE_URL_DIRECT alone will not override it. Never paste the URI or password into logs or chat.',
-  ].join('\\n');
+  ].join('\n');
 }
