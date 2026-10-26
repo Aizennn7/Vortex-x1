@@ -20,6 +20,7 @@ import {
   authenticationFailureGuidance,
   DatabaseConfigError,
   resolveDatabaseConnection,
+  supabasePoolerTenantGuidance,
   type DatabaseTarget,
 } from '../connection.js';
 import { migrate, status } from '../migrate.js';
@@ -94,6 +95,12 @@ async function main(): Promise<void> {
     const ping = 'ping' in client ? await client.ping() : { ok: true, detail: 'embedded' };
     if (!ping.ok) {
       process.stderr.write(`Database unreachable: ${ping.detail}\n`);
+      if (
+        target?.kind === 'session-pooler' &&
+        /tenant\/user.*not found|tenant or user.*not found/i.test(ping.detail)
+      ) {
+        process.stderr.write(`\n${supabasePoolerTenantGuidance(target)}\n`);
+      }
       if (/password authentication failed/i.test(ping.detail)) {
         process.stderr.write(`\n${authenticationFailureGuidance(target?.projectRef ?? null)}\n`);
       }
