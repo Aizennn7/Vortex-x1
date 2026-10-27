@@ -694,3 +694,20 @@ export function authenticationFailureGuidance(projectRef: string | null): string
     'logs, issues, or chat.',
   ].join('\n');
 }
+/**
+ * Safe remediation for Supabase's "tenant/user ... not found" Session Pooler
+ * response. This is a tenant/route lookup failure, not proof of a bad password.
+ */
+export function supabasePoolerTenantGuidance(
+  target: Pick<DatabaseTarget, 'source' | 'host' | 'user' | 'projectRef'>,
+): string {
+  const project = target.projectRef ? ` (project ref in username: \`${target.projectRef}\`)` : '';
+  return [
+    `Supabase's Session Pooler rejected the configured tenant/user${project}.`,
+    `Current parsed endpoint: source=${target.source}; host=${target.host}; user=${target.user || '(default)'}.`,
+    'The URI parses, but the pooler host/region and postgres.<project-ref> username may not identify the same active project endpoint.',
+    'Fix: open Supabase Dashboard → Connect → Session pooler for the intended project and copy the complete URI. Replace the GitHub repository secret DATABASE_URL at Settings → Secrets and variables → Actions → Repository secrets.',
+    'Keep port 5432 and ensure the host and username come from the same Connect panel. Do not reset the database password solely for this error.',
+    'DATABASE_URL takes precedence when both database variables are set; adding DATABASE_URL_DIRECT alone will not override it. Never paste the URI or password into logs or chat.',
+  ].join('\n');
+}

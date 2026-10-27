@@ -4,6 +4,7 @@ import {
   parseDatabaseUrl,
   resolveDatabaseConnection,
   resolvesToDummyHost,
+  supabasePoolerTenantGuidance,
 } from '../src/connection.js';
 import { PostgresClient } from '../src/postgres.js';
 
@@ -298,5 +299,21 @@ describe('database connection resolution', () => {
     const resolved = resolveDatabaseConnection({ env: {}, purpose: 'diagnostic' });
     expect(resolved.target).toBeNull();
     expect(resolved.warnings).toHaveLength(0);
+  });
+});
+
+
+describe('database connection failure guidance', () => {
+  it('explains a Supabase pooler tenant rejection without exposing the password', () => {
+    const target = parseDatabaseUrl(POOLER, { env: {} });
+    const guidance = supabasePoolerTenantGuidance(target);
+
+    expect(guidance).toContain('Session Pooler');
+    expect(guidance).toContain('DATABASE_URL');
+    expect(guidance).toContain('DATABASE_URL_DIRECT alone will not override it');
+    expect(guidance).toContain('aws-1-ap-south-1.pooler.supabase.com');
+    expect(guidance).toContain('Do not reset the database password solely for this error');
+    expect(guidance).not.toContain(PASSWORD);
+    expect(guidance).not.toContain(ENCODED);
   });
 });
