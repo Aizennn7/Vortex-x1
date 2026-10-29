@@ -7,7 +7,7 @@ name: Scheduled Pipeline Jobs
 #   - Recovers any stale RUNNING job slots from prior interrupted runs
 #   - Ingests M1 candles within Twelve Data Free quota reservations (8/min, 800/day)
 #   - Activates due signals and settles elapsed signals against stored candles
-#   - Evaluates enabled pairs and publishes qualifying signals to Telegram
+#   - Evaluates enabled pairs and persists qualifying signals in the VORTEX inbox
 #   - Updates component health, monitors losses/streaks/quotas, and prunes old rows
 #   - Marks its worker heartbeat stopped on exit so the dashboard never pretends
 #     a stopped worker is running
@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 # Never cancel an in-flight job: aborting mid-run could interrupt a database
-# transaction or leave a Telegram delivery unconfirmed. Overlapping runs are
+# transaction or leave a signal publication state ambiguous. Overlapping runs are
 # safely serialized by this concurrency group AND the Postgres `vortex-scheduler`
 # lock in `job_locks`.
 concurrency:
@@ -66,10 +66,6 @@ jobs:
       TWELVEDATA_API_KEY_2: ${{ secrets.TWELVEDATA_API_KEY_2 }}
       TWELVEDATA_API_KEY_3: ${{ secrets.TWELVEDATA_API_KEY_3 }}
       TWELVEDATA_API_KEY_4: ${{ secrets.TWELVEDATA_API_KEY_4 }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHANNEL_PRIMARY: ${{ secrets.TELEGRAM_CHANNEL_PRIMARY || vars.TELEGRAM_CHANNEL_PRIMARY }}
-      TELEGRAM_CHANNEL_SECONDARY: ${{ secrets.TELEGRAM_CHANNEL_SECONDARY || vars.TELEGRAM_CHANNEL_SECONDARY }}
-      VORTEX_TELEGRAM_ENABLED: ${{ vars.VORTEX_TELEGRAM_ENABLED || 'false' }}
       VORTEX_ALLOW_SYNTHETIC_SIGNALS: 'false'
       VORTEX_PROVIDER: ${{ vars.VORTEX_PROVIDER || 'twelvedata' }}
       VORTEX_PAIRS: ${{ vars.VORTEX_PAIRS || 'EUR/USD,GBP/USD' }}
