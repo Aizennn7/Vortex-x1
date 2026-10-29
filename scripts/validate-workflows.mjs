@@ -152,6 +152,14 @@ for (const name of ['TWELVEDATA_API_KEY', 'TWELVEDATA_API_KEY_2', 'TWELVEDATA_AP
   }
 }
 
+// Scheduled signals are stored in the in-app inbox; never expose legacy Telegram
+// credentials to this worker. Keep this guard so removed delivery cannot regress.
+for (const name of ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_PRIMARY', 'TELEGRAM_CHANNEL_SECONDARY', 'VORTEX_TELEGRAM_ENABLED']) {
+  if (new RegExp(`^\\s*${name}:`, 'm').test(jobsWorkflow)) {
+    errors.push(`vortex-jobs.yml: legacy Telegram setting ${name} must not be injected into the scheduled worker`);
+  }
+}
+
 // The read-only diagnostic must stay read-only and must use the validated
 // connection resolver. `npm run migrate` (apply) must never appear in it.
 const diagnostic = join(workflowsDir, 'database-diagnostic.yml');
