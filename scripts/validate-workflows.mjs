@@ -131,6 +131,12 @@ for (const scheduled of ['vortex-jobs.yml', 'vortex-learning.yml']) {
     errors.push(`${scheduled}: scheduled backend workflow must support "workflow_dispatch:"`);
   }
 
+  // Validate the expected Supabase project before attempting a network connection.
+  // The resolver compares this public ref with the project ref encoded in the pooler username.
+  if (!content.includes("SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'nohewrljcqimotoaemyg' }}")) {
+    errors.push(`${scheduled}: must pass SUPABASE_PROJECT_REF so database preflight can reject a mismatched project`);
+  }
+
   const statusIdx = content.indexOf('npm run migrate:status');
   const migrateIdx = content.indexOf('npm run migrate\n');
   if (statusIdx === -1) {
