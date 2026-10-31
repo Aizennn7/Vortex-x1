@@ -31,6 +31,7 @@ jobs:
       VORTEX_INSTANCE_LABEL: github-actions-learning
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DATABASE_URL_DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'nohewrljcqimotoaemyg' }}
       VORTEX_SECRET_KEY: ${{ secrets.VORTEX_SECRET_KEY }}
       VORTEX_ADMIN_TOKEN: ${{ secrets.VORTEX_ADMIN_TOKEN }}
       VORTEX_LEARNING_ENABLED: ${{ vars.VORTEX_LEARNING_ENABLED || 'true' }}
